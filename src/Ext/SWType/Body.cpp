@@ -1,0 +1,330 @@
+/*
+ * SuperWeaponExt — SuperWeaponTypeClass extension implementation.
+ *
+ * Container lifecycle addresses copied from Phobos src/Ext/SWType/Body.cpp:346-392
+ * (develop @4747562). Phobos maintains its own SWType container at these sites;
+ * ours is separate and every handler returns 0, so Syringe chains them.
+ */
+#include "Body.h"
+
+#include <Ext/TechnoType/Body.h>
+
+#include <BuildingClass.h>
+#include <CellClass.h>
+#include <HouseClass.h>
+#include <TechnoClass.h>
+#include <TechnoTypeClass.h>
+#include <Helpers/Cast.h>
+#include <Utilities/Debug.h>
+#include <Utilities/Macro.h>
+
+#include <cstdio>    // _snprintf_s
+#include <cstdlib>   // atoi
+#include <cstring>   // _strcmpi
+#include <string>
+#include <vector>
+
+SWTypeExt::ExtContainer SWTypeExt::ExtMap;
+
+// =============================================================================
+// Parsing
+// =============================================================================
+namespace
+{
+    std::vector<std::string> SplitList(const char* buffer)
+    {
+        std::vector<std::string> out;
+        std::string cur;
+        for (const char* p = buffer; p && *p; ++p)
+        {
+            if (*p == ',')
+            {
+                if (!cur.empty()) { out.push_back(cur); cur.clear(); }
+            }
+            else if (*p != ' ' && *p != '\t')
+            {
+                cur += *p;
+            }
+        }
+        if (!cur.empty()) out.push_back(cur);
+        return out;
+    }
+
+    std::vector<std::string> ReadList(CCINIClass* pINI, const char* section, const char* key)
+    {
+        char buffer[2048] = {};
+        if (pINI->ReadString(section, key, "", buffer, sizeof(buffer)) <= 0)
+            return {};
+        return SplitList(buffer);
+    }
+
+    // Parse an AffectsHouse mask. Accepts a comma list so
+    // "owner,enemies" and the shorthand "notallies" both work — the token names
+    // match Antares' SuperWeaponAffectedHouse spellings so modders do not have
+    // to learn a second vocabulary.
+    bool ParseRelation(CCINIClass* pINI, const char* section, const char* key,
+                       SWExt::Relation& into)
+    {
+        char buffer[128] = {};
+        if (pINI->ReadString(section, key, "", buffer, sizeof(buffer)) <= 0)
+            return false;
+
+        SWExt::Relation result = SWExt::Relation::None;
+        bool any = false;
+
+        for (auto const& tok : SplitList(buffer))
+        {
+            const char* t = tok.c_str();
+            SWExt::Relation bit = SWExt::Relation::None;
+
+            if (!_strcmpi(t, "owner") || !_strcmpi(t, "self"))          bit = SWExt::Relation::Owner;
+            else if (!_strcmpi(t, "allies") || !_strcmpi(t, "ally"))    bit = SWExt::Relation::Allies;
+            else if (!_strcmpi(t, "enemies") || !_strcmpi(t, "enemy"))  bit = SWExt::Relation::Enemies;
+            else if (!_strcmpi(t, "team"))                              bit = SWExt::Relation::Team;
+            else if (!_strcmpi(t, "notallies"))                         bit = SWExt::Relation::NotAllies;
+            else if (!_strcmpi(t, "notowner"))                          bit = SWExt::Relation::NotOwner;
+            else if (!_strcmpi(t, "all"))                               bit = SWExt::Relation::All;
+            else if (!_strcmpi(t, "none"))                              bit = SWExt::Relation::None;
+            else
+            {
+                Debug::Log("[SuperWeaponExt] [%s]%s: unknown house relation '%s' "
+                           "(expected owner/allies/enemies/team/notallies/notowner/all)\n",
+                           section, key, t);
+                continue;
+            }
+
+            result = result | bit;
+            any = true;
+        }
+
+        if (any)
+            into = result;
+        return any;
+    }
+
+    // Read one role's block: the type list, the parallel range overrides, the
+    // wildcard, the relation mask and the power requirement.
+    void ReadRule(CCINIClass* pINI, const char* section, const char* prefix,
+                  SWExt::Relation defaultRelation, bool defaultRequirePower,
+                  SWExt::Rule& into)
+    {
+        char key[128] = {};
+
+        // Types
+        _snprintf_s(key, sizeof(key), "%s", prefix);
+        for (auto const& tok : ReadList(pINI, section, key))
+        {
+            if (auto const pType = TechnoTypeClass::Find(tok.c_str()))
+                into.TypeIndices.push_back(pType->GetArrayIndex());
+            else
+                Debug::Log("[SuperWeaponExt] [%s]%s: unknown TechnoType '%s'\n",
+                           section, key, tok.c_str());
+        }
+
+        // Per-SW range overrides, positionally matched to the type list above.
+        // Shorter list = the tail falls back to the TechnoType range.
+        _snprintf_s(key, sizeof(key), "%s.Ranges", prefix);
+        for (auto const& tok : ReadList(pINI, section, key))
+            into.RangesByIndex.push_back(std::atoi(tok.c_str()));
+
+        if (into.RangesByIndex.size() > into.TypeIndices.size())
+        {
+            Debug::Log("[SuperWeaponExt] [%s]%s: %u ranges given for %u types; "
+                       "the extras are ignored\n", section, key,
+                       static_cast<unsigned>(into.RangesByIndex.size()),
+                       static_cast<unsigned>(into.TypeIndices.size()));
+        }
+
+        _snprintf_s(key, sizeof(key), "%s.Any", prefix);
+        into.Any = pINI->ReadBool(section, key, false);
+
+        into.Affects = defaultRelation;
+        _snprintf_s(key, sizeof(key), "%s.AffectsHouse", prefix);
+        ParseRelation(pINI, section, key, into.Affects);
+
+        _snprintf_s(key, sizeof(key), "%s.RequirePower", prefix);
+        into.RequirePower = pINI->ReadBool(section, key, defaultRequirePower);
+    }
+}
+
+void SWTypeExt::ExtData::LoadFromINIFile(CCINIClass* pINI)
+{
+    Extension<SuperWeaponTypeClass>::LoadFromINIFile(pINI);
+
+    const char* section = this->OwnerObject()->ID;
+
+    this->Inhibitors = SWExt::Rule{};
+    this->Designators = SWExt::Rule{};
+
+    // Defaults reproduce Antares' hardcoded behaviour, so a mod that only adds
+    // the type lists behaves exactly as it would under SW.Inhibitors /
+    // SW.Designators. Everything beyond that is opt-in.
+    //   - inhibitors: enemies only, and buildings must be powered
+    //   - designators: owner only, no power check
+    ReadRule(pINI, section, "SWExt.Inhibitors",
+             SWExt::Relation::Enemies, /*requirePower=*/true, this->Inhibitors);
+    ReadRule(pINI, section, "SWExt.Designators",
+             SWExt::Relation::Owner, /*requirePower=*/false, this->Designators);
+
+    if (this->IsConfigured())
+    {
+        Debug::Log("[SuperWeaponExt] [%s] %u inhibitor type(s)%s, "
+                   "%u designator type(s)%s\n", section,
+                   static_cast<unsigned>(this->Inhibitors.TypeIndices.size()),
+                   this->Inhibitors.Any ? " +Any" : "",
+                   static_cast<unsigned>(this->Designators.TypeIndices.size()),
+                   this->Designators.Any ? " +Any" : "");
+    }
+}
+
+// =============================================================================
+// The decision
+// =============================================================================
+bool SWTypeExt::ExtData::AllowsFireAt(HouseClass* pFirer, const CellStruct& cell) const
+{
+    if (!this->IsConfigured() || !pFirer)
+        return true;
+
+    std::vector<SWExt::Source> sources;
+    sources.reserve(64);
+
+    // TechnoClass::Array is DEFINE_REFERENCE (a reference to the vector, not a
+    // pointer to it) — hence `.Count`, not `->Count`.
+    for (int i = 0; i < TechnoClass::Array.Count; ++i)
+    {
+        TechnoClass* const pTechno = TechnoClass::Array.GetItem(i);
+        if (!pTechno)
+            continue;
+
+        TechnoTypeClass* const pType = pTechno->GetTechnoType();
+        if (!pType)
+            continue;
+
+        const int typeIndex = pType->GetArrayIndex();
+
+        // Skip anything neither rule could possibly care about. This is the
+        // cheap filter that keeps the per-frame cost near Antares' own.
+        if (!this->Inhibitors.CoversType(typeIndex) && !this->Designators.CoversType(typeIndex))
+            continue;
+
+        SWExt::Source src;
+        src.TypeIndex = typeIndex;
+        src.Active = pTechno->IsAlive && pTechno->Health > 0
+                  && !pTechno->InLimbo && !pTechno->Deactivated;
+
+        if (!src.Active)
+            continue;
+
+        // Relation of this techno's owner TO the firing house. Mind control does
+        // not launder an enemy into a friend: Owner is the *current* controller,
+        // which is the same call Antares makes.
+        HouseClass* const pOwner = pTechno->Owner;
+        if (pOwner == pFirer)
+            src.Rel = SWExt::Relation::Owner;
+        else if (pFirer->IsAlliedWith(pOwner))
+            src.Rel = SWExt::Relation::Allies;
+        else
+            src.Rel = SWExt::Relation::Enemies;
+
+        src.Vet = pTechno->Veterancy.IsElite()   ? SWExt::Rank::Elite
+                : pTechno->Veterancy.IsVeteran() ? SWExt::Rank::Veteran
+                                                 : SWExt::Rank::Rookie;
+
+        // Power only means anything for buildings; everything else counts as
+        // powered so RequirePower does not silently disable mobile inhibitors.
+        if (auto const pBld = abstract_cast<BuildingClass*>(pTechno))
+            src.Powered = pBld->IsPowerOnline();
+        else
+            src.Powered = true;
+
+        const auto center = CellClass::Coord2Cell(pTechno->GetCoords());
+        src.CellX = center.X;
+        src.CellY = center.Y;
+
+        // Veterancy-resolved TechnoType range, used when the SW gives no override.
+        auto const pTypeExt = TechnoTypeExt::ExtMap.Find(pType);
+        const bool isDesignator = this->Designators.CoversType(typeIndex);
+        auto const& spec = isDesignator ? pTypeExt->DesignatorRange
+                                        : pTypeExt->InhibitorRange;
+        src.FallbackRange = spec.Resolve(src.Vet, pType->Sight);
+
+        sources.push_back(src);
+    }
+
+    return SWExt::Allows(this->Inhibitors, this->Designators,
+                         sources, cell.X, cell.Y);
+}
+
+// Rules are static type data re-parsed from the rules INI on every load, so
+// there is nothing session-specific to serialize.
+template <typename T>
+void SWTypeExt::ExtData::Serialize(T&) { }
+
+void SWTypeExt::ExtData::LoadFromStream(PhobosStreamReader& stm)
+{
+    Extension<SuperWeaponTypeClass>::LoadFromStream(stm);
+    this->Serialize(stm);
+}
+
+void SWTypeExt::ExtData::SaveToStream(PhobosStreamWriter& stm)
+{
+    Extension<SuperWeaponTypeClass>::SaveToStream(stm);
+    this->Serialize(stm);
+}
+
+SWTypeExt::ExtContainer::ExtContainer()
+    : Container("SuperWeaponTypeClass")
+{ }
+
+SWTypeExt::ExtContainer::~ExtContainer() = default;
+
+// =============================================================================
+// Container lifecycle — addresses from Phobos src/Ext/SWType/Body.cpp
+// =============================================================================
+
+DEFINE_HOOK(0x6CE6F6, SuperWeaponTypeClass_CTOR, 0x5)
+{
+    GET(SuperWeaponTypeClass*, pItem, EAX);
+
+    SWTypeExt::ExtMap.TryAllocate(pItem);
+    return 0;
+}
+
+DEFINE_HOOK(0x6CEFE0, SuperWeaponTypeClass_SDDTOR, 0x8)
+{
+    GET(SuperWeaponTypeClass*, pItem, ECX);
+
+    SWTypeExt::ExtMap.Remove(pItem);
+    return 0;
+}
+
+DEFINE_HOOK_AGAIN(0x6CE8D0, SuperWeaponTypeClass_SaveLoad_Prefix, 0x8)
+DEFINE_HOOK(0x6CE800, SuperWeaponTypeClass_SaveLoad_Prefix, 0xA)
+{
+    GET_STACK(SuperWeaponTypeClass*, pItem, 0x4);
+    GET_STACK(IStream*, pStm, 0x8);
+
+    SWTypeExt::ExtMap.PrepareStream(pItem, pStm);
+    return 0;
+}
+
+DEFINE_HOOK(0x6CE8BE, SuperWeaponTypeClass_Load_Suffix, 0x7)
+{
+    SWTypeExt::ExtMap.LoadStatic();
+    return 0;
+}
+
+DEFINE_HOOK(0x6CE8EA, SuperWeaponTypeClass_Save_Suffix, 0x3)
+{
+    SWTypeExt::ExtMap.SaveStatic();
+    return 0;
+}
+
+DEFINE_HOOK(0x6CEE43, SuperWeaponTypeClass_LoadFromINI, 0xA)
+{
+    GET(SuperWeaponTypeClass*, pItem, EBP);
+    GET_STACK(CCINIClass*, pINI, 0x3FC);
+
+    SWTypeExt::ExtMap.LoadFromINI(pItem, pINI);
+    return 0;
+}
