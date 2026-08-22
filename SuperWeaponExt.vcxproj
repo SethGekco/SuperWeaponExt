@@ -25,6 +25,8 @@
     <ClCompile Include="src\Phobos.cpp" />
     <ClCompile Include="src\Ext\SWType\Body.cpp" />
     <ClCompile Include="src\Ext\SWType\Hooks.Launch.cpp" />
+    <ClCompile Include="src\Ext\SWType\Hooks.Cursor.cpp" />
+    <ClCompile Include="src\Commands\Commands.cpp" />
     <ClCompile Include="src\Ext\TechnoType\Body.cpp" />
     <ClCompile Include="YRpp\StaticInits.cpp" />
     <!-- Phobos utility implementations -->
@@ -39,6 +41,7 @@
     <ClInclude Include="src\SW\Constraint.h" />
     <ClInclude Include="src\Ext\SWType\Body.h" />
     <ClInclude Include="src\Ext\TechnoType\Body.h" />
+    <ClInclude Include="src\Commands\FireNamedSW.h" />
   </ItemGroup>
 
   <PropertyGroup Label="Globals">

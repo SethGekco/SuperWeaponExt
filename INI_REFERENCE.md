@@ -1,7 +1,8 @@
 # SuperWeaponExt — INI reference
 
-**Phase 1 (implemented): inhibitors and designators.** Everything else in
-`FINDINGS.md` is not wired yet.
+**Implemented:** inhibitors and designators (enforced at launch *and* on the
+cursor), plus dedicated per-superweapon hotkeys. Everything else in
+`FINDINGS.md` is not wired yet — see "Not implemented yet" below.
 
 ## Why a separate `SWExt.*` namespace
 
@@ -135,10 +136,11 @@ Phase 1 enforces at **`HouseClass::Fire_SW`** — the launch itself. That covers
 every path: manual click, AI, Antares' targeting, Phobos' SW sidebar, and
 trigger actions 505/506.
 
-**Known Phase 1 gap:** the *cursor* is not yet vetoed (Layers 2 and 3 in
-`FINDINGS.md` §6). Until those land, a blocked cell still shows an "allowed"
-cursor and the click is silently eaten. The launch decision is correct and
-network-safe; the UI just has not caught up.
+The cursor is vetoed too, by two further layers that share the same predicate:
+**Layer 2** (`0x4AC21C`) drops the click before it becomes a network event, and
+**Layer 3** (the `GetAction` vtable slot) makes the cursor itself read
+"disallowed" over a blocked cell. All three layers call one evaluator, so they
+cannot disagree.
 
 ---
 
@@ -151,5 +153,66 @@ Present in the design, absent from the code:
   a naive version is O(n²) on the cursor path.
 - Paradrop plane direction and formation.
 - `SW.KeepSelectedAfterFire`.
-- Hotkey bound to a named SWType.
+- `QuickFireAtMouse` / `QuickFireInScreen` for targeted superweapons.
 - Unit standing orders.
+
+---
+
+## Dedicated per-superweapon hotkey
+
+```ini
+[SOMESW]
+SWExt.HotkeyIndex=          ; int 0..15, or absent for none
+```
+
+Claims one of 16 dedicated hotkey slots for **this superweapon alone**. The key
+itself is bound in the in-game keyboard config, under Interface, where the entry
+shows the superweapon's own `UIName`.
+
+This is not Phobos' `FireTacticalSW1..10`. Those are *positional* — "fire
+whatever sits in SW-sidebar slot N" — and require the exclusive SW sidebar.
+`SWExt.HotkeyIndex` is independent of the sidebar, of whether the superweapon
+has a cameo, and of `SuperWeaponSidebarKeysEnabled`.
+
+First claimant wins if two superweapons name the same index; an out-of-range
+index is ignored with a log line.
+
+### What the key does
+
+| The superweapon's `Action` | Pressing the key |
+|---|---|
+| `None` | **fires immediately**, no target needed |
+| anything else | **arms** it, exactly like clicking its cameo — the next left click fires |
+
+### Invisible superweapon, fired at any time
+
+`Action=None` plus `SW.ShowCameo=no` gives a superweapon with no sidebar
+presence that a player triggers purely by keypress:
+
+```ini
+[MYHIDDENSW]
+Action=None
+SW.ShowCameo=no             ; read by both Antares and Phobos
+SWExt.HotkeyIndex=0
+```
+
+Firing queues a network-synced `SpecialPlace` event rather than calling into the
+engine directly, so every client executes it on the same frame. It arrives at
+`HouseClass::Fire_SW`, which means the Layer 1 inhibitor/designator veto applies
+to hotkey-fired superweapons automatically.
+
+**Not implemented:** `QuickFireAtMouse` / `QuickFireInScreen` (the closed
+PR#1379 tags), which would let a *targeted* superweapon fire straight at the
+cursor or screen centre instead of arming. The screen-point-to-cell conversion
+has not been verified, and an inert INI key is worse than an absent one.
+
+### Optional CSF strings
+
+| Key | Default |
+|---|---|
+| `TXT_SWEXT_FIRE_SW_XX` | `Fire Super Weapon %d` (fallback when the slot is unclaimed) |
+| `TXT_SWEXT_FIRE_SW_XX_DESC` | `Fires the super weapon that claimed SuperWeaponExt hotkey slot %d.` |
+
+⚠ The internal binding names (`SWExtFireSW1`..`SWExtFireSW16`) are what
+`RA2MD.ini [Hotkey]` stores. They are stable and must never be renamed, or every
+player's binding silently detaches.

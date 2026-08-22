@@ -11,7 +11,11 @@
 
 #include <BuildingClass.h>
 #include <CellClass.h>
+#include <DisplayClass.h>
+#include <EventClass.h>
+#include <GeneralDefinitions.h>
 #include <HouseClass.h>
+#include <SuperClass.h>
 #include <TechnoClass.h>
 #include <TechnoTypeClass.h>
 #include <Helpers/Cast.h>
@@ -166,6 +170,17 @@ void SWTypeExt::ExtData::LoadFromINIFile(CCINIClass* pINI)
     ReadRule(pINI, section, "SWExt.Designators",
              SWExt::Relation::Owner, /*requirePower=*/false, this->Designators);
 
+    // Dedicated hotkey slot. -1 (the default) means this SW claims none.
+    this->HotkeyIndex = pINI->ReadInteger(section, "SWExt.HotkeyIndex", -1);
+
+    if (this->HotkeyIndex >= SWExtHotkeySlots)
+    {
+        Debug::Log("[SuperWeaponExt] [%s] SWExt.HotkeyIndex=%d is out of range "
+                   "(0..%d); ignoring\n", section, this->HotkeyIndex,
+                   SWExtHotkeySlots - 1);
+        this->HotkeyIndex = -1;
+    }
+
     if (this->IsConfigured())
     {
         Debug::Log("[SuperWeaponExt] [%s] %u inhibitor type(s)%s, "
@@ -253,6 +268,87 @@ bool SWTypeExt::ExtData::AllowsFireAt(HouseClass* pFirer, const CellStruct& cell
 
     return SWExt::Allows(this->Inhibitors, this->Designators,
                          sources, cell.X, cell.Y);
+}
+
+bool SWTypeExt::AllowsCursorAt(SuperWeaponTypeClass* pType, const CellStruct& cell)
+{
+    if (!pType)
+        return true;
+
+    auto const pExt = SWTypeExt::ExtMap.Find(pType);
+
+    // Not ours to police, or no local player to evaluate against (observer,
+    // loading screen) — say nothing and let the incumbent's verdict stand.
+    if (!pExt || !pExt->IsConfigured())
+        return true;
+
+    // DEFINE_REFERENCE(HouseClass*, CurrentPlayer, 0xA83D4C) — a reference to
+    // the pointer, so no call parentheses.
+    auto const pPlayer = HouseClass::CurrentPlayer;
+    if (!pPlayer)
+        return true;
+
+    return pExt->AllowsFireAt(pPlayer, cell);
+}
+
+// =============================================================================
+// Dedicated per-superweapon hotkeys
+// =============================================================================
+SuperWeaponTypeClass* SWTypeExt::FindByHotkeyIndex(int index)
+{
+    if (index < 0)
+        return nullptr;
+
+    for (int i = 0; i < SuperWeaponTypeClass::Array.Count; ++i)
+    {
+        SuperWeaponTypeClass* const pType = SuperWeaponTypeClass::Array.GetItem(i);
+        if (!pType)
+            continue;
+
+        auto const pExt = SWTypeExt::ExtMap.Find(pType);
+        if (pExt && pExt->HotkeyIndex == index)
+            return pType;   // first claimant wins
+    }
+
+    return nullptr;
+}
+
+void SWTypeExt::FireByHotkeyIndex(int index)
+{
+    SuperWeaponTypeClass* const pType = SWTypeExt::FindByHotkeyIndex(index);
+    if (!pType)
+        return;   // nothing claimed this slot
+
+    HouseClass* const pPlayer = HouseClass::CurrentPlayer;
+    if (!pPlayer)
+        return;
+
+    SuperClass* const pSuper = pPlayer->Supers.GetItemOrDefault(pType->ArrayIndex);
+    if (!pSuper)
+        return;   // this house does not own the superweapon
+
+    if (!pSuper->CanFire())
+        return;   // still charging, on hold, or otherwise unavailable
+
+    if (pType->Action == Action::None)
+    {
+        // No target needed — fire immediately. This is the invisible-superweapon
+        // case: no cameo, no cursor, just a key. Queueing the event (rather than
+        // calling Fire_SW directly) is what makes it network-safe: every client
+        // executes it on the same frame. It lands in HouseClass::Fire_SW, so the
+        // Layer 1 inhibitor/designator veto applies with no extra work.
+        EventClass::OutList.Add(EventClass(
+            pPlayer->ArrayIndex, EventType::SpecialPlace,
+            pType->ArrayIndex, CellStruct::Empty));
+        return;
+    }
+
+    // Targeted superweapon: arm it, exactly as clicking its sidebar cameo does.
+    // The next left click fires it, and passes through Layers 2 and 3 on the way.
+    DisplayClass::Instance.CurrentBuilding = nullptr;
+    DisplayClass::Instance.CurrentBuildingType = nullptr;
+    DisplayClass::Instance.CurrentBuildingOwnerArrayIndex = -1;
+    DisplayClass::Instance.CurrentSWTypeIndex = pType->ArrayIndex;
 }
 
 // Rules are static type data re-parsed from the rules INI on every load, so

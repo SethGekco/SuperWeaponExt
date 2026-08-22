@@ -20,6 +20,7 @@ Phobos hardcode:
 | Range | per **TechnoType**, defaults to `Sight` | per TechnoType **or per superweapon** (the "index") |
 | Veterancy | none | separate rookie / veteran / elite radii |
 | Power check | inhibitor buildings only | configurable per role |
+| SW hotkey | positional (sidebar slot N) | **dedicated, per named superweapon** |
 
 See [INI_REFERENCE.md](INI_REFERENCE.md) for tags,
 [FINDINGS.md](FINDINGS.md) for the feasibility investigation, and
@@ -56,6 +57,8 @@ construction.
 src/SW/Constraint.h          the decision core — ENGINE-FREE on purpose
 src/Ext/SWType/Body.*        SW extension: INI parsing + the engine adapter
 src/Ext/SWType/Hooks.Launch.cpp   Layer 1, the launch veto
+src/Ext/SWType/Hooks.Cursor.cpp   Layers 2 + 3, so the cursor stops lying
+src/Commands/FireNamedSW.h        dedicated per-superweapon hotkeys
 src/Ext/TechnoType/Body.*    veterancy-tiered radii per TechnoType
 tests/constraint_test.cpp    40 assertions, runs on Linux
 ```
@@ -92,11 +95,10 @@ g++ -std=c++20 -Wall -Wextra -Werror -Isrc tests/constraint_test.cpp -o ct && ./
 
 ## Known gaps
 
-- **The cursor is not vetoed yet.** Layers 2 (`0x4AC21C`) and 3 (`0x6CEF80`) are
-  scoped in `FINDINGS.md` §6 but unimplemented, so a blocked cell still shows an
-  "allowed" cursor and the click is silently eaten. The launch decision is
-  correct; the UI has not caught up.
+- **Nothing here has run in a game.** CI proves it compiles, not that it works.
 - Range growth/shrink over time and proximity-ratio scaling are designed but not
   written — both have desync and O(n²) hazards documented at the TODO site.
-- Nothing here has run in a game. Container lifecycle addresses are copied from
-  Phobos and marked ASSUMED in `HOOKS_LOG.md`.
+- `QuickFireAtMouse` / `QuickFireInScreen` are absent: a hotkey on a *targeted*
+  superweapon arms it rather than firing at the cursor.
+- Container lifecycle and command-registration addresses are copied from Phobos
+  and marked ASSUMED in `HOOKS_LOG.md`.

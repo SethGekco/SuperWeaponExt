@@ -146,30 +146,99 @@ Same sites PrerequisiteExt and IntelExt use.
 
 ---
 
+## Layer 2 — `0x4AC21C` `DisplayClass::LeftMouseButtonUp` — click veto
+
+| | |
+|---|---|
+| Size | `0x6` (`8b 90 98 00 00 00` = `mov edx,[eax+0x98]`) |
+| Contention | **none** — unhooked by all six frameworks |
+| Status | VERIFIED (disassembly), **UNTESTED in game** |
+
+Antares hooks `0x4AC20C` and returns to either `0x4AC21C` (a superweapon
+resolved; `EAX` = `SuperWeaponTypeClass*`) or `0x4AC294` (none). Vanilla's own
+`call FindFirstOfAction; test eax,eax; je 0x4AC294` converges on the same two.
+So `0x4AC21C` is the convergence point, and a hook there runs on the Antares
+path *and* the vanilla path, after either has decided.
+
+`ESP` is unchanged between `0x4AC21C` and `0x4AC222`, so the target cell the
+game is about to put in the event is readable at `[esp+0x94]`. Veto by returning
+`0x4AC294` — the existing no-superweapon path — which means the `SpecialPlace`
+event is never queued at all.
+
+---
+
+## Layer 3 — `SuperWeaponTypeClass::GetAction` — cursor veto
+
+| | |
+|---|---|
+| Mechanism | **VTABLE slot replacement** at `0x7F40FC`, *not* a code hook |
+| Contention | **none** — slot unclaimed by all six frameworks |
+| Status | VERIFIED (vtable read + disassembly), **UNTESTED in game** |
+
+### ⚠ Correction: `0x6CEF80` is NOT hookable
+
+An earlier revision of this document planned a code hook at `0x6CEF80`, claiming
+Antares' hook at `0x6CEF84` left "exactly the 5 bytes a hook needs". **That was
+wrong — the prologue is 4 bytes:**
+
+```
+6cef80:  56           push %esi        (1)
+6cef81:  57           push %edi        (1)
+6cef82:  8b f9        mov  %ecx,%edi   (2)
+6cef84:  83 bf ...    cmpl $0xa,...    <-- Antares' hook starts here
+```
+
+A 5-byte Syringe `jmp` at `0x6CEF80` overwrites the first byte of the
+instruction at `0x6CEF84`, where Antares writes its own `jmp`. Whichever DLL
+injected second would corrupt the other — a load-order-dependent crash, not a
+build error. **Always count prologue bytes before claiming a hook fits.**
+
+### What we do instead
+
+`GetAction` is a virtual with no `call rel32` anywhere in `gamemd.exe`; its only
+absolute reference is vtable slot **`0x7F40FC`** (verified to contain
+`0x6CEF80`). We replace that slot via `DEFINE_FUNCTION_JUMP(VTABLE, ...)` — the
+same mechanism Phobos uses at `0x7E4290`, `0x7ECD98`, `0x7E2098` — and wrap it.
+The wrapper calls `0x6CEF80` directly, so Antares' in-function hook still runs
+and still decides first; we only deny afterwards.
+
+(Calling the game address directly rather than through a YRpp qualified call is
+deliberate: YRpp declares this virtual `R0`, so a qualified non-virtual call
+silently no-ops.)
+
+### ✅ Resolved: which disallow code to write
+
+Previously flagged "UNRESOLVED — do not guess." It is now read off the original's
+return value rather than guessed:
+
+| Original returned | We deny with |
+|---|---|
+| `0x7F` Antares `SuperWeaponAllowed` | `0x7E` Antares `SuperWeaponDisallowed` |
+| anything else (vanilla) | `0x46` = `Action::NoForceShield` |
+
+`0x46` is what vanilla itself returns at `0x6CEFCA` for a disallowed
+superweapon; the enum name says `NoForceShield` because that family owns the
+cursor, but the engine uses it for every SW. Denying in the caller's own
+vocabulary means each system's proper no-cursor is the one that shows.
+
+---
+
+## Commands — `0x533066` `CommandClassCallback_Register`
+
+| | |
+|---|---|
+| Size | `0x6` |
+| Contention | **shared, and proven safe** |
+| Status | ASSUMED (copied from Phobos), **UNTESTED in game** |
+
+Registers the 16 dedicated per-superweapon hotkey slots. Antares hooks
+`0x533058` (size 7); **Phobos and AggressiveStance both already hook `0x533066`**
+and co-load today, so Syringe chaining at this address is demonstrated rather
+than hoped for. Every handler returns 0.
+
+---
+
 ## Planned, not yet implemented
-
-### Layer 2 — `0x4AC21C` click veto
-`DisplayClass::LeftMouseButtonUp`. Antares hooks `0x4AC20C` and returns to
-either `0x4AC21C` (SW found, `EAX` = `SuperWeaponTypeClass*`) or `0x4AC294`
-(none). Vanilla converges on the same two. **`0x4AC21C` is that convergence
-point and is unhooked** — a hook there runs on the Antares path *and* the
-vanilla path, after either has decided. Stolen bytes `0x6`
-(`8b 90 98 00 00 00` = `mov edx,[eax+0x98]`); veto by returning `0x4AC294`.
-VERIFIED by disassembly; not implemented.
-
-### Layer 3 — `0x6CEF80` cursor veto
-Real entry of `SuperWeaponTypeClass::GetAction` — `0x6CEF73`–`0x6CEF7F` are
-alignment `nop`s. Antares hooks `0x6CEF84`, four bytes later, leaving the
-5-byte prologue (`56 57 8b f9`) free. Return `0` to allow, so Antares still
-evaluates its own constraints (this is what keeps composition AND rather than
-replacement). To deny: set `EAX`, jump `0x6CEFDB` (bare `ret $8`, correct from
-a stack where `esi`/`edi` were never pushed).
-
-**UNRESOLVED — do not guess.** Which disallow code to write. Antares defines
-`SuperWeaponAllowed = 0x7F` / `SuperWeaponDisallowed = 0x7E`
-(`src/Misc/Actions.h:9-10`) for its own SW types; vanilla's "no" is `0x46`,
-returned at `0x6CEFCA`. The right value depends on whether the SW is
-Antares-managed. Resolve at runtime.
 
 ### `0x6CC390` `SuperClass::Launch` — no-auto-deselect
 Unhooked by every framework. `Unsorted::CurrentSWType` @ `0x8809A0` is cleared

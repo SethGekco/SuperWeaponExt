@@ -15,6 +15,12 @@
 
 class HouseClass;
 
+// Number of dedicated per-superweapon hotkey slots (src/Commands/FireNamedSW.h).
+// Lives here rather than in the command header so Body.cpp can range-check
+// SWExt.HotkeyIndex without a circular include. Each slot costs one entry in the
+// keyboard config list.
+inline constexpr int SWExtHotkeySlots = 16;
+
 class SWTypeExt
 {
 public:
@@ -30,10 +36,21 @@ public:
         SWExt::Rule Inhibitors;
         SWExt::Rule Designators;
 
+        // Dedicated hotkey slot this superweapon claims, or -1 for none.
+        //
+        // TODO: SWExt.QuickFireAtMouse / .QuickFireInScreen (the closed PR#1379
+        // tags) would let a TARGETED superweapon fire straight at the cursor or
+        // screen centre instead of arming it. Deliberately not parsed yet — the
+        // screen-point-to-cell conversion (DisplayClass::ProcessClickCoords plus
+        // wherever the live mouse position lives) has not been verified, and a
+        // silently-inert INI key is worse than an absent one.
+        int HotkeyIndex;
+
         explicit ExtData(SuperWeaponTypeClass* pOwner)
             : Extension<SuperWeaponTypeClass>(pOwner)
             , Inhibitors{}
             , Designators{}
+            , HotkeyIndex(-1)
         { }
 
         virtual ~ExtData() = default;
@@ -70,4 +87,25 @@ public:
     };
 
     static ExtContainer ExtMap;
+
+    // Shared predicate for the two CURSOR-side layers (click veto @0x4AC21C and
+    // the GetAction vtable wrapper). Resolves the ext, early-outs when this SW
+    // is not ours to police, and evaluates against HouseClass::CurrentPlayer —
+    // the cursor is always the local player's.
+    //
+    // Layer 1 calls ExtData::AllowsFireAt directly with the *firing* house,
+    // because the launch path also runs for AI and remote players. Both routes
+    // reach the same evaluator, which is what stops the layers disagreeing.
+    static bool AllowsCursorAt(SuperWeaponTypeClass* pType, const CellStruct& cell);
+
+    // --- dedicated per-superweapon hotkeys (src/Commands/FireNamedSW.h) ---
+
+    // The superweapon that claimed hotkey slot `index`, or nullptr. First
+    // claimant wins; duplicates are reported at parse time.
+    static SuperWeaponTypeClass* FindByHotkeyIndex(int index);
+
+    // Fire the superweapon bound to `index` for the local player. Queues a
+    // network-synced SpecialPlace event, exactly as the sidebar cameo does — so
+    // it lands in HouseClass::Fire_SW and passes through the Layer 1 veto.
+    static void FireByHotkeyIndex(int index);
 };
