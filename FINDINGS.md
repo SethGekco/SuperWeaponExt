@@ -50,11 +50,102 @@ See §6 for the three veto points, all verified unhooked.
 
 | Wishlist item | Where it already lives |
 |---|---|
-| "Superweapons initiating triggers" | **Phobos, merged.** Trigger actions `505 RunSuperWeaponAtLocation` and `506 RunSuperWeaponAtWaypoint` (`src/Ext/TAction/Body.h:17-18`). Fires any SWType at any cell/waypoint. |
-| "SW assigned by hotkey" | **Phobos PR#1384, merged.** `FireTacticalSWCommandClass<0..9>` (`src/Commands/FireTacticalSW.h`), gated on `[GlobalControls] SuperWeaponSidebarKeysEnabled=yes`. *Caveat below.* |
+| "Superweapons initiating triggers" | **Antares, shipped** — as trigger *EVENTS*, see §1a. |
+| "SW assigned by hotkey" | **Partially. Phobos' hotkeys are positional, not per-SW — see §1b.** |
 | SW sidebar (PRs 1815 / 1711 / 1703 / 1387 / 1384) | **All merged.** Exclusive left-side SW sidebar, pyramid/rect arrangement, duplicate SW types, `TabIndex` per SW, tooltip fix. |
 | PRs 1383, 1379 | **Superseded** by 1384. #1379 was closed because reviewers required `ControlClass` and scrolling; that lesson is already recorded in `~/Claude/SidebarExt/DESIGN.md`. |
 | PR 1199 "Linked superweapons" | **Merged.** `SW.Link`, `.Grant`, `.Ready`, `.Reset`, roll-chances/weights. |
+
+### 1a. "Superweapons initiating triggers" — CORRECTED
+
+**An earlier draft of this document got the direction backwards.** It cited
+Phobos trigger actions `505 RunSuperWeaponAtLocation` / `506 RunSuperWeaponAtWaypoint`,
+which are *a trigger firing a superweapon*. Rex asked for the opposite: **a
+superweapon being fired should spring a trigger.**
+
+That exists, and it is **Antares**, not Phobos — three trigger **events**
+(`src/Utilities/AresEnums.h:31-33`):
+
+| ID | Event | Fires when |
+|---|---|---|
+| `75` (`0x4B`) | `SuperActivated` | the owning house fires the named superweapon |
+| `76` (`0x4C`) | `SuperDeactivated` | the house deactivates it (charge-drain types only) |
+| `77` (`0x4D`) | `SuperNearWaypoint` | the named SW is used within **5 cells** of a waypoint |
+
+Sprung from `SWTypeExt::Activate` / `Deactivate`
+(`src/Ext/SWType/Body.cpp:617-618, 634`) via `SpringHouseTags`. Editor names in
+WAE's `Events.ini`: `SWActivated`, `SWDeactivated`, `SWNearWP`.
+
+**Coverage caveat, and it matters.** `Activate` only springs the events when
+`pExt->GetNewSWType()` is non-null — i.e. only for superweapons Antares itself
+handles. In practice that is nearly everything: Antares reimplements Nuke,
+ChronoSphere, ChronoWarp, LightningStorm, Dominator, GeneticMutator, ParaDrop,
+SpyPlane, EMPulse, SonarPulse, Protect, Reveal, HunterSeeker, DropPod,
+UnitDelivery, Battery, Firewall and GenericWarhead
+(`src/Misc/SWTypes/`), and `FindHandler` maps vanilla actions onto them. But a
+superweapon Antares does *not* handle springs nothing.
+
+The `SuperNearWaypoint` radius is **hardcoded to 5.0 cells** and computed with
+`std::sqrt` on doubles — fine for a map trigger, but not a model to copy onto a
+synced path.
+
+**Remaining gaps worth building** (all small, all downstream of our Layer 1 hook):
+
+- A **launch-funnel-based** spring. Our `Fire_SW` @`0x4FAE50` hook catches
+  *every* launch regardless of whether Antares handles the type, so springing
+  from there closes the `GetNewSWType()` coverage hole for free.
+- **Configurable radius** on the near-waypoint event instead of hardcoded 5.
+- Events for *denied* launches — nothing today distinguishes "fired" from
+  "blocked by an inhibitor", which is exactly the signal a mod wants once
+  SWExt constraints exist.
+
+### 1b. Per-superweapon hotkey — the real gap
+
+Phobos PR#1384 (merged) added `FireTacticalSWCommandClass<0..9>`
+(`src/Commands/FireTacticalSW.h`), but they are **positional**: slot *N* of
+SW-sidebar column 0, gated on `[GlobalControls] SuperWeaponSidebarKeysEnabled=yes`
+and `SWSidebarClass::IsEnabled()`. Which superweapon a key fires depends on
+what happens to be in that slot.
+
+Rex wants the opposite: **a named superweapon owning its own dedicated key**,
+not sharing, not sidebar-dependent — including an *invisible* superweapon with
+no cameo that a player can trigger at any time.
+
+**Registration seam.** `CommandClassCallback_Register` @ `0x533058`.
+Antares hooks `0x533058` (size 7); **Phobos and AggressiveStance both hook
+`0x533066`** (size 6) and co-load today — so that address is proven-shareable
+and we can chain a third hook there.
+
+**The ordering constraint.** Registration runs during game init, and command
+identity is a compile-time C++ class whose `GetName()` is the stable ASCII key
+that `RA2MD.ini [Hotkey]` binds against. So the natural design is a **fixed pool
+of dedicated slots**, assigned by the modder:
+
+```ini
+[SOMESW]
+SWExt.HotkeyIndex=3          ; claims dedicated command slot 3, for this SW only
+```
+
+Each slot is one superweapon's own key — the UI name resolves at display time
+from the bound SW, falling back to a generic label when unclaimed. This is
+independent of the SW sidebar, of cameos, and of `SuperWeaponSidebarKeysEnabled`.
+
+> **To investigate before building:** whether commands can be registered *after*
+> rules parse, which would allow one auto-generated command per SWType instead of
+> a fixed pool. That depends on init ordering versus the keyboard-config read, and
+> has **not** been verified. Do not assume it works.
+
+**Firing without a click.** The invisible-SW case needs a target with no cursor
+interaction. Prior art is the closed **PR#1379**: `SW.QuickFireAtMouse` (fire at
+the mouse cell) and `SW.QuickFireInScreen` (fire at screen centre). Mechanism is
+already proven in Phobos' `SWButtonClass::LaunchSuper()` — queue
+`EventClass(house, EventType::SpecialPlace, swIndex, cell)`, which is
+network-synced and lands in `RespondToEvent` → `Fire_SW`. Hiding the cameo is
+`SW.ShowCameo=no`, which both Antares and Phobos already read.
+
+Note the pleasing consequence: because that path ends at `Fire_SW`, a
+hotkey-fired invisible superweapon passes through our Layer 1 veto automatically
+— inhibitors and designators apply with no extra work.
 
 ### Vanilla trigger actions that already touch SWs
 `SetSuperweaponCharge` (charge to N%), `SuperweaponSetRechargeTime`,
@@ -63,19 +154,19 @@ See §6 for the three veto points, all verified unhooked.
 hardcoded `NukeStrike` / `LightningStormStrike` / `IronCurtainAt` /
 `MeteorShowerAt` / `LightningStrikeAt`.
 
-`PreferredTargetCellSet` + `SetSuperweaponCharge=100` + AI auto-fire is very likely
-the "CnCNet allows this partially" you remembered. Worth correcting one assumption
-though: **trigger actions are not data-driven.** They are a `switch` in
-`TActionClass::Execute` (`0x6DD8D7`); no INI can add one. Antares extends that switch
-at `0x6DD8D7`, Phobos at `0x6DD8B0` — different addresses, no collision, and a third
-DLL could take a third slot in the same prologue.
+These are all trigger → superweapon (the direction §1a corrects), listed here only
+so the existing surface is on record. `PreferredTargetCellSet` +
+`SetSuperweaponCharge=100` + AI auto-fire is very likely the "CnCNet allows this
+partially" you remembered.
 
-### The hotkey caveat (a real, small gap)
-Phobos' 10 hotkeys are **positional** — "fire whatever is in SW-sidebar slot 3" —
-and only work when the exclusive SW sidebar is enabled. There is no
-`[SOMESW] HotkeyCommand=` that binds a key to a *named* SWType regardless of sidebar
-state. Closing that gap is ~1 new `CommandClass` template plus an INI-driven
-registration list.
+Worth correcting one assumption: **trigger actions are not data-driven.** They are
+a `switch` in `TActionClass::Execute` (`0x6DD8D7`); no INI can add one. Antares
+extends that switch at `0x6DD8D7`, Phobos at `0x6DD8B0` — different addresses, no
+collision, and a third DLL could take a third slot in the same prologue. The same
+is true of trigger *events* in `TEventClass::HasOccured` (`0x71E949`), which is how
+Antares adds events 75-77.
+
+*(The hotkey gap is covered in §1b above.)*
 
 ---
 
