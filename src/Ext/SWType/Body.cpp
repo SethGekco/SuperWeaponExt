@@ -15,8 +15,9 @@
 #include <EventClass.h>
 #include <GeneralDefinitions.h>
 #include <HouseClass.h>
+#include <ObjectClass.h>
+#include <Surface.h>
 #include <SuperClass.h>
-#include <TacticalClass.h>
 #include <TechnoClass.h>
 #include <TechnoTypeClass.h>
 #include <WWMouseClass.h>
@@ -364,6 +365,36 @@ bool SWTypeExt::AllowsCursorAt(SuperWeaponTypeClass* pType, const CellStruct& ce
 // =============================================================================
 // Dedicated per-superweapon hotkeys
 // =============================================================================
+namespace
+{
+    // Screen point (VIEW-RELATIVE) -> the cell the player is actually looking at.
+    //
+    // ⚠ Do NOT do this with TacticalClass::ClientToCoords. That maps a screen
+    // point to world coordinates as if the ground were flat, so on raised
+    // terrain it returns a cell offset toward the north — by roughly one cell
+    // per height level, which in play looked like a 1-4 cell error that varied
+    // with the terrain. CoordsToScreen shows why: it draws at
+    // `y - AdjustForZ(coord.Z)`, and the naive inverse cannot undo a Z it does
+    // not know.
+    //
+    // DisplayClass::ProcessClickCoords is the engine's own resolver — it is what
+    // the real mouse handler calls at 0x4AACD4, and it walks the terrain to find
+    // the cell actually under the pixel, height and bridges included.
+    CellStruct ScreenPointToCell(Point2D point)
+    {
+        CellStruct cell = CellStruct::Empty;
+        CoordStruct coord {};
+        ObjectClass* pTarget = nullptr;
+        BYTE unk1 = 0;
+        BYTE unk2 = 0;
+
+        DisplayClass::Instance.ProcessClickCoords(
+            &point, &cell, &coord, &pTarget, &unk1, &unk2);
+
+        return cell;
+    }
+}
+
 CellStruct SWTypeExt::ExtData::ResolveHotkeyCell(HouseClass* pFirer) const
 {
     using M = SWTypeExt::ExtData::HotkeyTargetMode;
@@ -381,30 +412,25 @@ CellStruct SWTypeExt::ExtData::ResolveHotkeyCell(HouseClass* pFirer) const
         return pFirer ? pFirer->GetBaseCenter() : CellStruct::Empty;
 
     case M::Screen:
-        if (auto const pTac = TacticalClass::Instance)
-        {
-            // The tactical view rectangle; centre of it in client coordinates.
-            auto const& view = *reinterpret_cast<RectangleStruct*>(0xB0CE28);
-            const Point2D centre{ view.Width / 2, view.Height / 2 };
-            return CellClass::Coord2Cell(pTac->ClientToCoords(centre));
-        }
-        return CellStruct::Empty;
+    {
+        // ViewBounds is already the tactical viewport, so its centre is a
+        // view-relative point — exactly what ScreenPointToCell wants.
+        const Point2D centre{ Surface::ViewBounds.Width / 2,
+                              Surface::ViewBounds.Height / 2 };
+        return ScreenPointToCell(centre);
+    }
 
     case M::Mouse:
     default:
-        if (auto const pTac = TacticalClass::Instance)
+        if (auto const pMouse = WWMouseClass::Instance)
         {
-            if (auto const pMouse = WWMouseClass::Instance)
-            {
-                Point2D pt{};
-                pMouse->GetCoords(&pt);
-                // Mouse coords are screen-absolute; ClientToCoords wants them
-                // relative to the tactical view's origin.
-                auto const& view = *reinterpret_cast<RectangleStruct*>(0xB0CE28);
-                pt.X -= view.X;
-                pt.Y -= view.Y;
-                return CellClass::Coord2Cell(pTac->ClientToCoords(pt));
-            }
+            Point2D pt{};
+            pMouse->GetCoords(&pt);
+            // Mouse coords are screen-absolute; make them view-relative the same
+            // way the engine's own mouse handler does at 0x4AAC92.
+            pt.X -= Surface::ViewBounds.X;
+            pt.Y -= Surface::ViewBounds.Y;
+            return ScreenPointToCell(pt);
         }
         return CellStruct::Empty;
     }
@@ -473,6 +499,9 @@ void SWTypeExt::FireByHotkeyIndex(int index)
         // target picker instead — see Antares Hooks.Targeting.cpp:660.)
         const CellStruct cell = pExt ? pExt->ResolveHotkeyCell(pPlayer)
                                      : CellStruct::Empty;
+
+        Debug::Log("[SuperWeaponExt] hotkey slot %d fired %s at cell (%d,%d)\n",
+                   index, pType->ID, cell.X, cell.Y);
 
         EventClass::OutList.Add(EventClass(
             pPlayer->ArrayIndex, EventType::SpecialPlace,

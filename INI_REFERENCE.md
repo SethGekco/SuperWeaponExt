@@ -270,6 +270,12 @@ the click, as always.
 cell we supply and runs its own target picker
 (`Antares src/Ext/SWType/Hooks.Targeting.cpp:660`).
 
+`mouse` and `screen` resolve through `DisplayClass::ProcessClickCoords`, the
+engine's own screen-point-to-cell routine — the same one the real mouse handler
+uses. That matters because the obvious alternative,
+`TacticalClass::ClientToCoords`, assumes flat ground and lands the shot roughly
+one cell north per height level on raised terrain.
+
 **Not a desync risk**, despite reading local mouse and view state. The cell is
 resolved on the pressing client and then travels *inside* the queued
 `SpecialPlace` event, so every client executes the same cell — exactly how a
