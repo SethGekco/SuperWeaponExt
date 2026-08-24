@@ -415,8 +415,8 @@ CellStruct SWTypeExt::ExtData::ResolveHotkeyCell(HouseClass* pFirer) const
     {
         // ViewBounds is already the tactical viewport, so its centre is a
         // view-relative point — exactly what ScreenPointToCell wants.
-        const Point2D centre{ Surface::ViewBounds.Width / 2,
-                              Surface::ViewBounds.Height / 2 };
+        const Point2D centre{ DSurface::ViewBounds.Width / 2,
+                              DSurface::ViewBounds.Height / 2 };
         return ScreenPointToCell(centre);
     }
 
@@ -428,8 +428,8 @@ CellStruct SWTypeExt::ExtData::ResolveHotkeyCell(HouseClass* pFirer) const
             pMouse->GetCoords(&pt);
             // Mouse coords are screen-absolute; make them view-relative the same
             // way the engine's own mouse handler does at 0x4AAC92.
-            pt.X -= Surface::ViewBounds.X;
-            pt.Y -= Surface::ViewBounds.Y;
+            pt.X -= DSurface::ViewBounds.X;
+            pt.Y -= DSurface::ViewBounds.Y;
             return ScreenPointToCell(pt);
         }
         return CellStruct::Empty;
