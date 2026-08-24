@@ -153,7 +153,6 @@ Present in the design, absent from the code:
   a naive version is O(n²) on the cursor path.
 - Paradrop plane direction and formation.
 - `SW.KeepSelectedAfterFire`.
-- `QuickFireAtMouse` / `QuickFireInScreen` for targeted superweapons.
 - Unit standing orders.
 
 ---
@@ -200,10 +199,8 @@ engine directly, so every client executes it on the same frame. It arrives at
 `HouseClass::Fire_SW`, which means the Layer 1 inhibitor/designator veto applies
 to hotkey-fired superweapons automatically.
 
-**Not implemented:** `QuickFireAtMouse` / `QuickFireInScreen` (the closed
-PR#1379 tags), which would let a *targeted* superweapon fire straight at the
-cursor or screen centre instead of arming. The screen-point-to-cell conversion
-has not been verified, and an inert INI key is worse than an absent one.
+This is what the closed PR#1379 called `QuickFireAtMouse` / `QuickFireInScreen`;
+here it is `SWExt.Hotkey.Target` (below).
 
 ### Optional CSF strings
 
@@ -248,3 +245,33 @@ SWExt.Hotkey.FireInstantly=yes    ; required under Antares
 
 Both modes are useful: arming gives a keyboard shortcut that replaces hunting
 for the cameo, while instant firing gives a superweapon with no UI at all.
+
+### Where an instant launch lands
+
+```ini
+[SOMESW]
+SWExt.Hotkey.Target=mouse     ; mouse | screen | base | cell | none
+SWExt.Hotkey.TargetCell=X,Y   ; only when Target=cell
+```
+
+| Value | Target cell |
+|---|---|
+| `mouse` (default, alias `cursor`) | the cell under the cursor when the key is pressed |
+| `screen` (alias `view`) | the centre of the current view |
+| `base` | the firing house's base centre (falls back to its spawn cell) |
+| `cell` | the fixed `SWExt.Hotkey.TargetCell=X,Y` |
+| `none` | cell `(0,0)` — for superweapons that ignore location entirely |
+
+Only applies when the hotkey **fires**. An armed superweapon takes its cell from
+the click, as always.
+
+**AI targeting** is a separate thing and already exists: set Antares'
+`SW.UseAITargeting=yes`. Antares' `SpecialPlace` handler then ignores whatever
+cell we supply and runs its own target picker
+(`Antares src/Ext/SWType/Hooks.Targeting.cpp:660`).
+
+**Not a desync risk**, despite reading local mouse and view state. The cell is
+resolved on the pressing client and then travels *inside* the queued
+`SpecialPlace` event, so every client executes the same cell — exactly how a
+normal cameo click already behaves. What would be unsafe is reading the mouse
+during event *execution*; we do not.

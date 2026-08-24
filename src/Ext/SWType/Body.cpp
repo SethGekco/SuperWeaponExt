@@ -16,8 +16,10 @@
 #include <GeneralDefinitions.h>
 #include <HouseClass.h>
 #include <SuperClass.h>
+#include <TacticalClass.h>
 #include <TechnoClass.h>
 #include <TechnoTypeClass.h>
+#include <WWMouseClass.h>
 #include <Helpers/Cast.h>
 #include <Utilities/Debug.h>
 #include <Utilities/Macro.h>
@@ -193,15 +195,60 @@ void SWTypeExt::ExtData::LoadFromINIFile(CCINIClass* pINI)
         }
     }
 
+    // Where an instant hotkey launch aims.
+    {
+        char mode[32] = {};
+        if (pINI->ReadString(section, "SWExt.Hotkey.Target", "", mode, sizeof(mode)) > 0)
+        {
+            using M = SWTypeExt::ExtData::HotkeyTargetMode;
+            if (!_strcmpi(mode, "mouse") || !_strcmpi(mode, "cursor")) this->HotkeyTarget = M::Mouse;
+            else if (!_strcmpi(mode, "screen") || !_strcmpi(mode, "view")) this->HotkeyTarget = M::Screen;
+            else if (!_strcmpi(mode, "base"))                             this->HotkeyTarget = M::Base;
+            else if (!_strcmpi(mode, "cell"))                             this->HotkeyTarget = M::Cell;
+            else if (!_strcmpi(mode, "none"))                             this->HotkeyTarget = M::None;
+            else
+            {
+                Debug::Log("[SuperWeaponExt] [%s] SWExt.Hotkey.Target='%s' is not "
+                           "recognised (mouse/screen/base/cell/none); using mouse\n",
+                           section, mode);
+            }
+        }
+
+        char cellBuf[64] = {};
+        if (pINI->ReadString(section, "SWExt.Hotkey.TargetCell", "", cellBuf, sizeof(cellBuf)) > 0)
+        {
+            int x = 0, y = 0;
+            if (sscanf_s(cellBuf, "%d,%d", &x, &y) == 2)
+            {
+                this->HotkeyTargetCell.X = static_cast<short>(x);
+                this->HotkeyTargetCell.Y = static_cast<short>(y);
+            }
+            else
+            {
+                Debug::Log("[SuperWeaponExt] [%s] SWExt.Hotkey.TargetCell='%s' is not "
+                           "an X,Y pair; ignoring\n", section, cellBuf);
+            }
+        }
+    }
+
     if (this->HotkeyIndex >= 0)
     {
+        using M = SWTypeExt::ExtData::HotkeyTargetMode;
+        const char* target =
+              this->HotkeyTarget == M::Mouse  ? "mouse"
+            : this->HotkeyTarget == M::Screen ? "screen centre"
+            : this->HotkeyTarget == M::Base   ? "base centre"
+            : this->HotkeyTarget == M::Cell   ? "fixed cell"
+                                              : "none (0,0)";
+
         Debug::Log("[SuperWeaponExt] [%s] claims hotkey slot %d (command "
-                   "SWExtFireSW%d); on press it will %s\n",
+                   "SWExtFireSW%d); on press it will %s; instant target = %s\n",
                    section, this->HotkeyIndex, this->HotkeyIndex + 1,
                    this->HotkeyFireInstantly == 1 ? "FIRE immediately"
                  : this->HotkeyFireInstantly == 0 ? "ARM the cursor"
                  : "auto-decide from Action (unreliable under Antares — set "
-                   "SWExt.Hotkey.FireInstantly explicitly)");
+                   "SWExt.Hotkey.FireInstantly explicitly)",
+                   target);
     }
 
     if (this->IsConfigured())
@@ -317,6 +364,52 @@ bool SWTypeExt::AllowsCursorAt(SuperWeaponTypeClass* pType, const CellStruct& ce
 // =============================================================================
 // Dedicated per-superweapon hotkeys
 // =============================================================================
+CellStruct SWTypeExt::ExtData::ResolveHotkeyCell(HouseClass* pFirer) const
+{
+    using M = SWTypeExt::ExtData::HotkeyTargetMode;
+
+    switch (this->HotkeyTarget)
+    {
+    case M::Cell:
+        return this->HotkeyTargetCell;
+
+    case M::None:
+        return CellStruct::Empty;
+
+    case M::Base:
+        // BaseCenter, falling back to the spawn cell if the house has no base yet.
+        return pFirer ? pFirer->GetBaseCenter() : CellStruct::Empty;
+
+    case M::Screen:
+        if (auto const pTac = TacticalClass::Instance)
+        {
+            // The tactical view rectangle; centre of it in client coordinates.
+            auto const& view = *reinterpret_cast<RectangleStruct*>(0xB0CE28);
+            const Point2D centre{ view.Width / 2, view.Height / 2 };
+            return CellClass::Coord2Cell(pTac->ClientToCoords(centre));
+        }
+        return CellStruct::Empty;
+
+    case M::Mouse:
+    default:
+        if (auto const pTac = TacticalClass::Instance)
+        {
+            if (auto const pMouse = WWMouseClass::Instance)
+            {
+                Point2D pt{};
+                pMouse->GetCoords(&pt);
+                // Mouse coords are screen-absolute; ClientToCoords wants them
+                // relative to the tactical view's origin.
+                auto const& view = *reinterpret_cast<RectangleStruct*>(0xB0CE28);
+                pt.X -= view.X;
+                pt.Y -= view.Y;
+                return CellClass::Coord2Cell(pTac->ClientToCoords(pt));
+            }
+        }
+        return CellStruct::Empty;
+    }
+}
+
 SuperWeaponTypeClass* SWTypeExt::FindByHotkeyIndex(int index)
 {
     if (index < 0)
@@ -370,9 +463,20 @@ void SWTypeExt::FireByHotkeyIndex(int index)
         // calling Fire_SW directly) is what makes it network-safe: every client
         // executes it on the same frame. It lands in HouseClass::Fire_SW, so the
         // Layer 1 inhibitor/designator veto applies with no extra work.
+        //
+        // Where it lands comes from SWExt.Hotkey.Target. Resolving mouse/view
+        // state here is safe: the resolved cell travels inside the event, so
+        // every client executes the same one.
+        //
+        // (If the superweapon sets Antares' SW.UseAITargeting=yes, Antares'
+        // SpecialPlace handler ignores this cell entirely and runs its own AI
+        // target picker instead — see Antares Hooks.Targeting.cpp:660.)
+        const CellStruct cell = pExt ? pExt->ResolveHotkeyCell(pPlayer)
+                                     : CellStruct::Empty;
+
         EventClass::OutList.Add(EventClass(
             pPlayer->ArrayIndex, EventType::SpecialPlace,
-            pType->ArrayIndex, CellStruct::Empty));
+            pType->ArrayIndex, cell));
         return;
     }
 

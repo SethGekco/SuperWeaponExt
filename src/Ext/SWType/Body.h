@@ -59,12 +59,38 @@ public:
         // instead of firing it. Modders on Antares must set this explicitly.
         int HotkeyFireInstantly;
 
+        // Where an instantly-fired hotkey launch aims.
+        //
+        // Only matters when the hotkey FIRES rather than arms — an armed
+        // superweapon gets its cell from the click, as usual.
+        //
+        // NOT a desync risk despite reading local mouse/view state: the cell is
+        // resolved on the pressing client and then travels inside the queued
+        // SpecialPlace event, so every client executes the same cell. Exactly
+        // how a normal cameo click already works.
+        enum class HotkeyTargetMode : unsigned char
+        {
+            Mouse = 0,   // cell under the cursor (default)
+            Screen,      // centre of the current view
+            Base,        // the firing house's base centre
+            Cell,        // fixed HotkeyTargetCell
+            None,        // cell (0,0) — for superweapons that ignore location
+        };
+
+        HotkeyTargetMode HotkeyTarget;
+        CellStruct HotkeyTargetCell;
+
+        // Resolve HotkeyTarget to an actual cell for pFirer.
+        CellStruct ResolveHotkeyCell(HouseClass* pFirer) const;
+
         explicit ExtData(SuperWeaponTypeClass* pOwner)
             : Extension<SuperWeaponTypeClass>(pOwner)
             , Inhibitors{}
             , Designators{}
             , HotkeyIndex(-1)
             , HotkeyFireInstantly(-1)
+            , HotkeyTarget(HotkeyTargetMode::Mouse)
+            , HotkeyTargetCell{}
         { }
 
         virtual ~ExtData() = default;
