@@ -179,21 +179,20 @@ index is ignored with a log line.
 
 ### What the key does
 
-| The superweapon's `Action` | Pressing the key |
-|---|---|
-| `None` | **fires immediately**, no target needed |
-| anything else | **arms** it, exactly like clicking its cameo — the next left click fires |
+Controlled by `SWExt.Hotkey.FireInstantly` — see below. Either **fires
+immediately** with no target, or **arms** the cursor exactly like clicking the
+cameo, so the next left click fires.
 
 ### Invisible superweapon, fired at any time
 
-`Action=None` plus `SW.ShowCameo=no` gives a superweapon with no sidebar
-presence that a player triggers purely by keypress:
+`SWExt.Hotkey.FireInstantly=yes` plus `SW.ShowCameo=no` gives a superweapon with
+no sidebar presence that a player triggers purely by keypress:
 
 ```ini
 [MYHIDDENSW]
-Action=None
 SW.ShowCameo=no             ; read by both Antares and Phobos
 SWExt.HotkeyIndex=0
+SWExt.Hotkey.FireInstantly=yes
 ```
 
 Firing queues a network-synced `SpecialPlace` event rather than calling into the
@@ -216,3 +215,36 @@ has not been verified, and an inert INI key is worse than an absent one.
 ⚠ The internal binding names (`SWExtFireSW1`..`SWExtFireSW16`) are what
 `RA2MD.ini [Hotkey]` stores. They are stable and must never be renamed, or every
 player's binding silently detaches.
+
+### Fire immediately, or arm the cursor?
+
+```ini
+[SOMESW]
+SWExt.Hotkey.FireInstantly=   ; boolean; absent = auto
+```
+
+| Value | Pressing the key |
+|---|---|
+| `yes` | **fires immediately** at no target |
+| `no` | **arms** the cursor — the next left click fires |
+| *absent* | auto: fires immediately only if `Action` is unset |
+
+**⚠ Set this explicitly if Antares is loaded.** The auto path infers "no target
+needed" from `Action == None`, which is correct on vanilla but never true under
+Antares: Antares forces `Action = SuperWeaponAllowed` on every superweapon it
+handles (`src/Ext/SWType/Body.cpp:91-93`), and via `NewSWType::FindHandler` that
+is effectively all of them, vanilla types included. Leaving this unset under
+Antares therefore always arms. Found by running the DLL in a real game — CI
+cannot catch it.
+
+So the invisible-superweapon recipe needs the explicit tag:
+
+```ini
+[MYHIDDENSW]
+SW.ShowCameo=no
+SWExt.HotkeyIndex=0
+SWExt.Hotkey.FireInstantly=yes    ; required under Antares
+```
+
+Both modes are useful: arming gives a keyboard shortcut that replaces hunting
+for the cameo, while instant firing gives a superweapon with no UI at all.

@@ -181,6 +181,29 @@ void SWTypeExt::ExtData::LoadFromINIFile(CCINIClass* pINI)
         this->HotkeyIndex = -1;
     }
 
+    // Tri-state: absent leaves -1 (auto). See the header for why auto is
+    // unreliable under Antares. Probed with ReadString first because ReadBool
+    // cannot distinguish "absent" from "explicitly no".
+    {
+        char probe[32] = {};
+        if (pINI->ReadString(section, "SWExt.Hotkey.FireInstantly", "", probe, sizeof(probe)) > 0)
+        {
+            this->HotkeyFireInstantly =
+                pINI->ReadBool(section, "SWExt.Hotkey.FireInstantly", false) ? 1 : 0;
+        }
+    }
+
+    if (this->HotkeyIndex >= 0)
+    {
+        Debug::Log("[SuperWeaponExt] [%s] claims hotkey slot %d (command "
+                   "SWExtFireSW%d); on press it will %s\n",
+                   section, this->HotkeyIndex, this->HotkeyIndex + 1,
+                   this->HotkeyFireInstantly == 1 ? "FIRE immediately"
+                 : this->HotkeyFireInstantly == 0 ? "ARM the cursor"
+                 : "auto-decide from Action (unreliable under Antares — set "
+                   "SWExt.Hotkey.FireInstantly explicitly)");
+    }
+
     if (this->IsConfigured())
     {
         Debug::Log("[SuperWeaponExt] [%s] %u inhibitor type(s)%s, "
@@ -330,7 +353,17 @@ void SWTypeExt::FireByHotkeyIndex(int index)
     if (!pSuper->CanFire())
         return;   // still charging, on hold, or otherwise unavailable
 
-    if (pType->Action == Action::None)
+    auto const pExt = SWTypeExt::ExtMap.Find(pType);
+
+    // -1 auto / 0 arm / 1 fire. Auto falls back to the Action test, which is
+    // correct without Antares but never true with it — Antares forces
+    // Action = SuperWeaponAllowed on every SW it handles. Verified in-game.
+    const bool fireInstantly =
+        (pExt && pExt->HotkeyFireInstantly >= 0)
+            ? (pExt->HotkeyFireInstantly == 1)
+            : (pType->Action == Action::None);
+
+    if (fireInstantly)
     {
         // No target needed — fire immediately. This is the invisible-superweapon
         // case: no cameo, no cursor, just a key. Queueing the event (rather than

@@ -46,11 +46,25 @@ public:
         // silently-inert INI key is worse than an absent one.
         int HotkeyIndex;
 
+        // Does the hotkey FIRE the superweapon outright, or just arm the cursor?
+        //   -1 = auto (infer from Action == None), 0 = always arm, 1 = always fire
+        //
+        // ⚠ WHY THIS IS NOT INFERRED. The obvious rule — "Action == Action::None
+        // means no target is needed" — is unusable whenever Antares is loaded.
+        // Antares FORCES Action = SuperWeaponAllowed (0x7F) on every superweapon
+        // it handles (Antares src/Ext/SWType/Body.cpp:91-93), and via
+        // NewSWType::FindHandler that is essentially all of them, vanilla types
+        // included. So the auto path never triggers under Antares. Found by
+        // running the DLL in a real game, not by CI: the hotkey armed the SW
+        // instead of firing it. Modders on Antares must set this explicitly.
+        int HotkeyFireInstantly;
+
         explicit ExtData(SuperWeaponTypeClass* pOwner)
             : Extension<SuperWeaponTypeClass>(pOwner)
             , Inhibitors{}
             , Designators{}
             , HotkeyIndex(-1)
+            , HotkeyFireInstantly(-1)
         { }
 
         virtual ~ExtData() = default;
