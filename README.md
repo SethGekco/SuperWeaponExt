@@ -4,7 +4,8 @@ Standalone Syringe DLL extending Red Alert 2: Yuri's Revenge superweapons.
 Built against **Antares** (not Ares) and designed to **coexist** with both
 Antares and Phobos — it forks neither and contends for no address either owns.
 
-**Status: Phase 1 scaffold. Compiles-in-CI only; never run in a game.**
+**Status: working and verified in a live skirmish** (2026-08-24) alongside Antares,
+Phobos and 13 other Syringe DLLs. See `HOOKS_LOG.md` for what was checked.
 
 ---
 
@@ -95,7 +96,6 @@ g++ -std=c++20 -Wall -Wextra -Werror -Isrc tests/constraint_test.cpp -o ct && ./
 
 ## Known gaps
 
-- **Nothing here has run in a game.** CI proves it compiles, not that it works.
 - Range growth/shrink over time and proximity-ratio scaling are designed but not
   written — both have desync and O(n²) hazards documented at the TODO site.
 - `QuickFireAtMouse` / `QuickFireInScreen` are absent: a hotkey on a *targeted*

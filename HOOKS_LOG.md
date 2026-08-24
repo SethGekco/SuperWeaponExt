@@ -21,7 +21,7 @@ independently confirmed. **UNTESTED** = never run in a game.
 |---|---|
 | Size | `0x7` |
 | Contention | **none** — entry unhooked by all six frameworks |
-| Status | VERIFIED (disassembly + call-site census), **UNTESTED in game** |
+| Status | **VERIFIED in-game** (2026-08-24 skirmish) + disassembly & call-site census |
 
 The load-bearing hook. Every superweapon launch funnels through this function —
 **17 call sites**, enumerated from the disassembly:
@@ -99,6 +99,29 @@ will fail to compile — first on the now-nonexistent `InvalidatePointer` overri
 
 ---
 
+## In-game verification (2026-08-24)
+
+Run in a live skirmish alongside Antares + Phobos + 13 other Syringe DLLs.
+
+| Checked | Result |
+|---|---|
+| Syringe handshake | recognised, handshook |
+| Rules parsed | `[SWExtInhibitorTest] 3 inhibitor type(s), 0 designator type(s)` |
+| Access violations | **zero**; no crash snapshots |
+| Layer 1 launch veto | own Power Plant blocks the shot |
+| Layers 2+3 cursor/click | cursor refuses over own Power Plant |
+| **Owner-scoped inhibitors** | **own** GAPOWR blocks, **enemy** GAPOWR does not |
+| Hotkey (fire + arm modes) | both behave as configured |
+| Instant-fire targeting | lands on the cursor cell |
+
+The owner-scoped result is the load-bearing one: Antares hardcodes inhibitors to
+**enemies only** (`src/Misc/SWTypes.cpp:243-260`), so an inhibitor that triggers
+on the firer's *own* building — and correctly ignores the enemy's — cannot be
+Antares. It is proof the veto layers are ours and that they compose rather than
+collide.
+
+---
+
 ## Container lifecycle — ASSUMED (copied from Phobos)
 
 Both sets are Phobos' own container sites. Ours are *separate* containers and
@@ -152,7 +175,7 @@ Same sites PrerequisiteExt and IntelExt use.
 |---|---|
 | Size | `0x6` (`8b 90 98 00 00 00` = `mov edx,[eax+0x98]`) |
 | Contention | **none** — unhooked by all six frameworks |
-| Status | VERIFIED (disassembly), **UNTESTED in game** |
+| Status | **VERIFIED in-game** (2026-08-24 skirmish) + disassembly |
 
 Antares hooks `0x4AC20C` and returns to either `0x4AC21C` (a superweapon
 resolved; `EAX` = `SuperWeaponTypeClass*`) or `0x4AC294` (none). Vanilla's own
@@ -173,7 +196,7 @@ event is never queued at all.
 |---|---|
 | Mechanism | **VTABLE slot replacement** at `0x7F40FC`, *not* a code hook |
 | Contention | **none** — slot unclaimed by all six frameworks |
-| Status | VERIFIED (vtable read + disassembly), **UNTESTED in game** |
+| Status | **VERIFIED in-game** (2026-08-24 skirmish) + vtable read & disassembly |
 
 ### ⚠ Correction: `0x6CEF80` is NOT hookable
 
@@ -229,7 +252,7 @@ vocabulary means each system's proper no-cursor is the one that shows.
 |---|---|
 | Size | `0x6` |
 | Contention | **shared, and proven safe** |
-| Status | ASSUMED (copied from Phobos), **UNTESTED in game** |
+| Status | ASSUMED (copied from Phobos), **exercised in-game** — commands registered and bound |
 
 Registers the 16 dedicated per-superweapon hotkey slots. Antares hooks
 `0x533058` (size 7); **Phobos and AggressiveStance both already hook `0x533066`**
