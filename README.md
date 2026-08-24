@@ -98,7 +98,7 @@ g++ -std=c++20 -Wall -Wextra -Werror -Isrc tests/constraint_test.cpp -o ct && ./
 
 - Range growth/shrink over time and proximity-ratio scaling are designed but not
   written — both have desync and O(n²) hazards documented at the TODO site.
-- `QuickFireAtMouse` / `QuickFireInScreen` are absent: a hotkey on a *targeted*
-  superweapon arms it rather than firing at the cursor.
+- A hotkey on a superweapon set to *arm* still needs a click; only
+  `SWExt.Hotkey.FireInstantly=yes` fires at the resolved cell directly.
 - Container lifecycle and command-registration addresses are copied from Phobos
   and marked ASSUMED in `HOOKS_LOG.md`.

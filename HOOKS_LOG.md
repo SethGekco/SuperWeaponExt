@@ -9,9 +9,14 @@ Registry consulted: `~/Claude/YR-Hook-Encyclopedia/registry/hooks.csv`
 (5327 rows; Ares, Antares, Phobos, Kratos, CnCNet-Spawner, AggressiveStance).
 Disassembly: `objdump -D -b binary -m i386 --adjust-vma=0x400000 gamemd.exe`.
 
-Status legend: **VERIFIED** = read out of a disassembly or upstream source in
-this session. **ASSUMED** = copied from a framework that uses it, not
-independently confirmed. **UNTESTED** = never run in a game.
+Status legend: **VERIFIED in-game** = exercised in a live skirmish.
+**VERIFIED** = read out of a disassembly or upstream source. **ASSUMED** =
+copied from a framework that uses it, not independently confirmed.
+
+Findings from this log are now upstream in the encyclopedia as
+`encyclopedia/Superweapon-Launch-Targeting.md` and the `0x692300`
+`ProcessClickCoords` entry on `encyclopedia/Selection-Mouse.md` (commit
+`b4d03a0`).
 
 ---
 
