@@ -64,6 +64,7 @@ namespace
         AircraftTypeClass* Aircraft    = nullptr;
         HouseClass*        Owner       = nullptr;
         CellStruct         Target      {};
+        CellStruct         Spawn       {};
         Edge               Entry       = Edge::North;
         std::vector<TechnoTypeClass*> Types;
         std::vector<int>              Nums;
@@ -133,7 +134,8 @@ namespace
     bool LaunchPlane(HouseClass* pOwner, AircraftTypeClass* pPlaneType,
                      const CellStruct& target, Edge entry,
                      const std::vector<TechnoTypeClass*>& types,
-                     const std::vector<int>& nums)
+                     const std::vector<int>& nums,
+                     const CellStruct* pSpawnOverride = nullptr)
     {
         if (!pOwner || !pPlaneType || types.empty() || types.size() != nums.size())
             return false;
@@ -154,9 +156,14 @@ namespace
 
         pPlane->Spawned = true;
 
-        const auto spawnCell = MapClass::Instance.PickCellOnEdge(
-            entry, CellStruct::Empty, CellStruct::Empty,
-            SpeedType::Winged, true, MovementZone::Normal);
+        // A caller building a formation supplies the entry cell so the planes
+        // come in spread out; otherwise fall back to the engine's edge picker,
+        // which is what Antares uses.
+        const auto spawnCell = pSpawnOverride
+            ? *pSpawnOverride
+            : MapClass::Instance.PickCellOnEdge(
+                  entry, CellStruct::Empty, CellStruct::Empty,
+                  SpeedType::Winged, true, MovementZone::Normal);
 
         pPlane->QueueMission(Mission::ParadropApproach, false);
         pPlane->SetTarget(pTargetCell);
@@ -232,6 +239,24 @@ bool SWTypeExt::RunOwnedParaDrop(SuperWeaponTypeClass* pType, HouseClass* pFirer
                                         FromEngineEdge(entry));
     }
 
+    // Pick the entry cell ONCE for the whole drop, then spread the planes along
+    // the edge by each one's sideways formation offset.
+    //
+    // Antares calls PickCellOnEdge per plane with identical arguments, which is
+    // why stock multi-plane drops enter bunched at one point and only fan out at
+    // the target. Sharing a base cell and offsetting from it means the formation
+    // is visible on the way in, not just on arrival.
+    //
+    // Only the SIDEWAYS (perpendicular) component is applied. The forward
+    // component would push planes off the edge line — further out is harmless in
+    // principle but risks Unlimbo failing outside the map.
+    const CellStruct baseSpawn = MapClass::Instance.PickCellOnEdge(
+        entry, CellStruct::Empty, CellStruct::Empty,
+        SpeedType::Winged, true, MovementZone::Normal);
+
+    SWExt::Offset fwd{}, right{};
+    SWExt::ApproachAxes(FromEngineEdge(entry), fwd, right);
+
     int launched = 0;
     int queued   = 0;
 
@@ -240,6 +265,14 @@ bool SWTypeExt::RunOwnedParaDrop(SuperWeaponTypeClass* pType, HouseClass* pFirer
         CellStruct target = cell;
         target.X = static_cast<short>(target.X + offsets[i].X);
         target.Y = static_cast<short>(target.Y + offsets[i].Y);
+
+        // Project this plane's offset onto the edge direction. `right` is a unit
+        // vector, so the dot product is the sideways distance in cells.
+        const int sideways = offsets[i].X * right.X + offsets[i].Y * right.Y;
+
+        CellStruct spawn = baseSpawn;
+        spawn.X = static_cast<short>(spawn.X + right.X * sideways);
+        spawn.Y = static_cast<short>(spawn.Y + right.Y * sideways);
 
         const int delay = i < cfg.Delays.size() ? cfg.Delays[i] : 0;
 
@@ -251,6 +284,7 @@ bool SWTypeExt::RunOwnedParaDrop(SuperWeaponTypeClass* pType, HouseClass* pFirer
             p.Owner       = pFirer;
             p.Target      = target;
             p.Entry       = entry;
+            p.Spawn       = spawn;
             p.Types       = cfg.Types;
             p.Nums        = cfg.Nums;
             g_pending.push_back(std::move(p));
@@ -258,7 +292,7 @@ bool SWTypeExt::RunOwnedParaDrop(SuperWeaponTypeClass* pType, HouseClass* pFirer
             continue;
         }
 
-        if (LaunchPlane(pFirer, cfg.Aircraft, target, entry, cfg.Types, cfg.Nums))
+        if (LaunchPlane(pFirer, cfg.Aircraft, target, entry, cfg.Types, cfg.Nums, &spawn))
             ++launched;
     }
 
@@ -291,7 +325,7 @@ void SWTypeExt::TickPendingParaDrops()
 
         // The owner may have been defeated between queueing and launching.
         if (p.Owner && !p.Owner->Defeated)
-            LaunchPlane(p.Owner, p.Aircraft, p.Target, p.Entry, p.Types, p.Nums);
+            LaunchPlane(p.Owner, p.Aircraft, p.Target, p.Entry, p.Types, p.Nums, &p.Spawn);
     }
 }
 

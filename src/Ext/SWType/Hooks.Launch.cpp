@@ -56,6 +56,7 @@
  */
 #include "Body.h"
 
+#include <DisplayClass.h>
 #include <HouseClass.h>
 #include <SuperClass.h>
 #include <SuperWeaponTypeClass.h>
@@ -117,6 +118,21 @@ DEFINE_HOOK(0x4FAE50, HouseClass_Fire_SW_ConstraintVeto, 0x7)
         // back on the clock" (the same one the spy-infiltration trigger action
         // uses), so the recharge behaves as the modder configured it.
         pSuper->Reset();
+
+        // Aborting also skips the DESELECT. Unsorted::CurrentSWType (0x8809A0,
+        // == DisplayClass::Instance.CurrentSWTypeIndex) is what keeps the cursor
+        // armed, and the engine clears it from inside SuperClass::Launch — at
+        // eleven separate `movl $-1` sites, one per superweapon action branch.
+        // We never reach any of them, so without this the cursor stays holding
+        // the superweapon after it has already fired.
+        //
+        // ⚠ Guarded on CurrentPlayer. Fire_SW runs on EVERY client (it is
+        // downstream of the event queue), so clearing unconditionally would
+        // reset the local cursor whenever a *remote* player fired. The pending-SW
+        // index is local UI state, so touching it per-client is desync-safe —
+        // but only if we touch the right client's.
+        if (pThis == HouseClass::CurrentPlayer)
+            DisplayClass::Instance.CurrentSWTypeIndex = -1;
 
         R->AL(1);      // report "it fired"
         return Deny;   // "Deny" here means "skip the engine's own launch"
