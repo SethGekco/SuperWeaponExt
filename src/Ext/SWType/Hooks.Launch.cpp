@@ -123,31 +123,8 @@ DEFINE_HOOK(0x4FAE50, HouseClass_Fire_SW_ConstraintVeto, 0x7)
     }
 
     return Continue;
-
-    Debug::Log("[SuperWeaponExt] denied %s for house %d at (%d,%d): "
-               "inhibitor/designator constraints not met\n",
-               pSuper->Type->ID, pThis->ArrayIndex, pCoords->X, pCoords->Y);
-
-    // Fire_SW returns bool; report "did not fire".
-    R->AL(0);
-    return Deny;
 }
 
-// TODO(Layer 2, FINDINGS.md §6): click veto at 0x4AC21C — the convergence point
-// both Antares (returning from its 0x4AC20C hook) and vanilla reach. Stolen
-// bytes 0x6 (`mov edx,[eax+0x98]`), veto by returning 0x4AC294. Cosmetic +
-// latency only; Layer 1 above is what actually enforces. Both layers must be
-// driven by SWTypeExt::ExtData::AllowsFireAt so they can never disagree.
-//
-// TODO(Layer 3, FINDINGS.md §6): cursor veto at 0x6CEF80 — the real entry of
-// SuperWeaponTypeClass::GetAction (0x6CEF73..0x6CEF7F are alignment nops).
-// Antares hooks 0x6CEF84, four bytes later, leaving the 5-byte prologue free.
-// Return 0 to allow so Antares still evaluates its own constraints; to deny,
-// set EAX and jump 0x6CEFDB (bare `ret $8`). UNRESOLVED: which disallow code to
-// write — Antares uses SuperWeaponDisallowed=0x7E (src/Misc/Actions.h:10) for
-// its own SW types, vanilla returns 0x46 at 0x6CEFCA. Determine from the SW's
-// type at runtime; do not guess.
-//
 // TODO(standing orders, FINDINGS.md §3b): record the per-house "last SW impact
 // cell" here — this hook is the one place every launch is guaranteed to pass.
 // Deliberately NOT done yet: that blackboard is session state and must be
