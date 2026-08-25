@@ -126,7 +126,7 @@ whatever base range resolved — including a per-SW `Ranges` override.
 ```ini
 [SOMESW]
 ; --- grows (or shrinks) as the match runs on ---
-SWExt.Inhibitors.Growth=          ; int, cells per MINUTE; negative shrinks
+SWExt.Inhibitors.Growth=          ; cells per MINUTE, FRACTIONAL ok; negative shrinks
 SWExt.Inhibitors.Growth.Min=      ; int, clamp floor for the FINAL range
 SWExt.Inhibitors.Growth.Max=      ; int, clamp ceiling for the FINAL range
 
@@ -195,6 +195,11 @@ SWExt.Inhibitors.Growth.Min=5     ; but never below 5
   must compute the identical radius on the identical frame.
 - **Growth is measured from the start of the match**, not from when the building
   was placed. Per-object age would need per-instance saved state; this does not.
+- **The rate is fractional.** `Growth=0.25` is a quarter-cell per minute — one
+  extra cell every four minutes. Radii are whole cells, so a slow rate simply
+  holds steady between steps rather than jittering. Internally the rate is
+  converted once at rules-load into thousandths of a cell per minute and every
+  per-frame calculation stays exact integer, so no float reaches the synced path.
 - Division **floors**, so growth and shrink of equal magnitude move the radius by
   equal amounts.
 - A range that reaches `0` or below stops constraining entirely — a shrinking

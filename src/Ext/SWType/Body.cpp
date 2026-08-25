@@ -155,8 +155,17 @@ namespace
         into.RequirePower = pINI->ReadBool(section, key, defaultRequirePower);
 
         // --- growth over match time ---
+        // Read as a double so fractional rates work (`Growth=0.25`), then scale
+        // to an integer immediately. Parsing happens once per rules load from
+        // identical INI text on every client, so the result is identical too —
+        // and no float survives into the per-frame maths.
         _snprintf_s(key, sizeof(key), "%s.Growth", prefix);
-        into.Growth.PerMinute = pINI->ReadInteger(section, key, 0);
+        {
+            const double perMinute = pINI->ReadDouble(section, key, 0.0);
+            into.Growth.MilliPerMinute =
+                static_cast<int>(perMinute * SWExt::GrowthScale
+                                 + (perMinute >= 0.0 ? 0.5 : -0.5));
+        }
 
         _snprintf_s(key, sizeof(key), "%s.Growth.Min", prefix);
         into.Growth.Min = pINI->ReadInteger(section, key, -1);

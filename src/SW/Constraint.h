@@ -91,13 +91,24 @@ namespace SWExt
     // ⚠ Driven by the SYNCED frame counter (Unsorted::CurrentFrame), never by
     // wall-clock or render time. Every client must compute the same radius on
     // the same frame or the launch verdict diverges.
+    // Growth rates are stored as THOUSANDTHS of a cell per minute, so a modder
+    // can write `Growth=0.25` and get a quarter-cell per minute. An integer
+    // cells-per-minute rate would have floored the slowest useful setting at
+    // 1 cell/min, which is far too coarse for a long match.
+    //
+    // The INI value is parsed to a double ONCE, at rules-load time, and
+    // immediately converted to this integer. Everything downstream is exact
+    // integer arithmetic, so no float ever reaches a per-frame calculation
+    // where clients could round apart.
+    inline constexpr int GrowthScale = 1000;
+
     struct GrowthSpec
     {
-        int PerMinute = 0;    // cells added per minute; negative shrinks
-        int Min       = -1;   // clamp floor, <0 = none
-        int Max       = -1;   // clamp ceiling, <0 = none
+        int MilliPerMinute = 0;   // thousandths of a cell per minute; negative shrinks
+        int Min            = -1;  // clamp floor, <0 = none
+        int Max            = -1;  // clamp ceiling, <0 = none
 
-        bool Active() const { return this->PerMinute != 0; }
+        bool Active() const { return this->MilliPerMinute != 0; }
 
         int DeltaAt(int frames) const
         {
@@ -105,8 +116,8 @@ namespace SWExt
                 return 0;
 
             return static_cast<int>(FloorDiv(
-                static_cast<std::int64_t>(this->PerMinute) * frames,
-                FramesPerMinute));
+                static_cast<std::int64_t>(this->MilliPerMinute) * frames,
+                static_cast<std::int64_t>(FramesPerMinute) * GrowthScale));
         }
     };
 

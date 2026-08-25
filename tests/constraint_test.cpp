@@ -276,7 +276,7 @@ static void Test_GrowthOverTime()
     std::printf("growth over match time\n");
 
     auto rule = MakeRule({ 1 }, Relation::Enemies);
-    rule.Growth.PerMinute = 6;                       // +6 cells per minute
+    rule.Growth.MilliPerMinute = 1000 * 6;                       // +6 cells per minute
     std::vector<Source> src{ MakeSource(1, Relation::Enemies, 0, 0, 4) };
 
     EvalContext t0;   t0.Frames = 0;
@@ -302,7 +302,7 @@ static void Test_ShrinkAndClamps()
     std::printf("shrink + clamps\n");
 
     auto rule = MakeRule({ 1 }, Relation::Enemies);
-    rule.Growth.PerMinute = -5;
+    rule.Growth.MilliPerMinute = 1000 * -5;
     std::vector<Source> src{ MakeSource(1, Relation::Enemies, 0, 0, 20) };
 
     EvalContext t2; t2.Frames = FramesPerMinute * 2;
@@ -318,14 +318,14 @@ static void Test_ShrinkAndClamps()
     CHECK(!Allows(rule, kInactive, src, 3, 0, t5), "the floored radius still inhibits");
 
     auto grow = MakeRule({ 1 }, Relation::Enemies);
-    grow.Growth.PerMinute = 10;
+    grow.Growth.MilliPerMinute = 1000 * 10;
     grow.Growth.Max = 12;
     EvalContext t9; t9.Frames = FramesPerMinute * 9;
     CHECK(EffectiveRange(grow, src[0], t9) == 12, "Max ceilings the FINAL range");
 
     // Symmetry: growth and shrink of equal magnitude move by equal amounts.
-    auto up = MakeRule({ 1 }, Relation::Enemies);   up.Growth.PerMinute = 7;
-    auto dn = MakeRule({ 1 }, Relation::Enemies);   dn.Growth.PerMinute = -7;
+    auto up = MakeRule({ 1 }, Relation::Enemies);   up.Growth.MilliPerMinute = 1000 * 7;
+    auto dn = MakeRule({ 1 }, Relation::Enemies);   dn.Growth.MilliPerMinute = 1000 * -7;
     EvalContext t3; t3.Frames = FramesPerMinute * 3;
     const int base = 30;
     auto s2 = MakeSource(1, Relation::Enemies, 0, 0, base);
@@ -436,7 +436,7 @@ static void Test_ModifiersCompose()
     std::printf("growth + ratio together\n");
 
     auto rule = MakeRule({ 1 }, Relation::Enemies);
-    rule.Growth.PerMinute = 6;
+    rule.Growth.MilliPerMinute = 1000 * 6;
     rule.Ratio.TypeIndices = { 50 };
     rule.Ratio.Affects = Relation::All;
     rule.Ratio.PerUnit = 2;
@@ -494,7 +494,7 @@ static void Test_GrowthDeterminism()
     // Same inputs must give the same answer every time and on every client --
     // this is integer-only by construction, so this test is really guarding
     // against someone "simplifying" it to floating point later.
-    GrowthSpec g; g.PerMinute = 7;
+    GrowthSpec g; g.MilliPerMinute = 7000;
     for (int f = 0; f < 5000; f += 137)
     {
         const int a = g.DeltaAt(f);
@@ -506,8 +506,32 @@ static void Test_GrowthDeterminism()
     CHECK(g.DeltaAt(-100) == 0, "negative frame counts do not run growth backwards");
     CHECK(g.DeltaAt(0) == 0,    "frame 0 yields no growth");
 
+    // --- fractional rates ---
+    // The whole point of the milli-cell scale: rates slower than 1 cell/min.
+    GrowthSpec quarter; quarter.MilliPerMinute = 250;      // 0.25 cells/min
+    CHECK(quarter.DeltaAt(FramesPerMinute) == 0,
+          "a quarter-cell after one minute floors to 0 -- radii are whole cells");
+    CHECK(quarter.DeltaAt(FramesPerMinute * 4) == 1,
+          "0.25/min reaches a full cell after four minutes");
+    CHECK(quarter.DeltaAt(FramesPerMinute * 20) == 5,
+          "0.25/min is 5 cells after twenty minutes");
+
+    GrowthSpec half; half.MilliPerMinute = 500;            // 0.5 cells/min
+    CHECK(half.DeltaAt(FramesPerMinute * 2) == 1,  "0.5/min is 1 cell after 2 min");
+    CHECK(half.DeltaAt(FramesPerMinute * 10) == 5, "0.5/min is 5 cells after 10 min");
+
+    // Fractional shrink floors the same way, keeping the two symmetric.
+    GrowthSpec slowShrink; slowShrink.MilliPerMinute = -500;
+    CHECK(slowShrink.DeltaAt(FramesPerMinute * 10) == -5,
+          "fractional shrink mirrors fractional growth");
+
+    // A rate too small to ever matter must stay inert rather than jitter.
+    GrowthSpec tiny; tiny.MilliPerMinute = 1;              // 0.001 cells/min
+    CHECK(tiny.DeltaAt(FramesPerMinute * 100) == 0,
+          "0.001/min is still 0 cells after 100 minutes");
+
     // No overflow at long-match frame counts.
-    GrowthSpec big; big.PerMinute = 1000;
+    GrowthSpec big; big.MilliPerMinute = 1000 * 1000;
     CHECK(big.DeltaAt(900 * 600) > 0, "a 10-hour match does not overflow to negative");
 }
 
