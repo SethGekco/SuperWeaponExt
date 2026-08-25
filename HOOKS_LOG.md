@@ -292,3 +292,24 @@ ChronoSphere second-click, not a deselect.
    feature with no hook, duplicated in Antares (`src/Misc/SWTypes.cpp:231-260`)
    and Phobos (`src/Ext/SWType/SWHelpers.cpp:47-132`). Exactly the kind of
    "does NOT exist where you'd expect" fact the does-not sections are for.
+
+---
+
+## ⚠ Replacing a launch at `0x4FAE50`: the three things the abort skips
+
+Aborting `Fire_SW` to substitute your own effect is the technique this DLL's
+owned paradrop uses. It works, but the abort bypasses the **entire** remainder of
+the launch, and each omission showed up as a separate in-game bug. All three were
+found by playing, none by CI.
+
+| Skipped | Symptom | Fix |
+|---|---|---|
+| `SuperClass::ClickFire` spending the charge | superweapon stays permanently "Ready" | call `SuperClass::Reset()` (`0x6CE0B0`) |
+| The deselect — 11 `movl $-1` sites for `0x8809A0`, all inside `SuperClass::Launch` | cursor keeps holding the superweapon after firing | clear `DisplayClass::Instance.CurrentSWTypeIndex` (guard on `CurrentPlayer`) |
+| Every readiness check, which live *inside* `ClickFire` | superweapon is spammable while recharging — the timer resets but each click still fires | gate on `SuperClass::CanFire()` (`0x6CC360`) **before** doing the work |
+
+The last one is the subtle one: the timer resetting *looks* like the charge is
+being spent correctly, so the bug reads as "recharge is broken" when in fact
+recharge is fine and the **gate** is missing. `Fire_SW`'s entry is upstream of
+every check the engine makes, so anything replacing a launch there owns all of
+them.

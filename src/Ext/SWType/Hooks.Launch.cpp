@@ -113,6 +113,19 @@ DEFINE_HOOK(0x4FAE50, HouseClass_Fire_SW_ConstraintVeto, 0x7)
     //
     // Sits AFTER the constraint check on purpose: an owned paradrop still obeys
     // inhibitors and designators.
+    // ⚠ READINESS GATE. This hook is at Fire_SW's ENTRY, upstream of every
+    // charge check the engine performs — those live inside ClickFire, which the
+    // abort below skips. Without this, each click ran the drop again regardless
+    // of the recharge timer: the timer reset correctly and the superweapon was
+    // still spammable. Found in-game; CanFire is the engine's own predicate and
+    // the same one Phobos gates its sidebar launch on.
+    //
+    // Returning Continue rather than Deny lets the engine give its normal
+    // not-ready response (the "not charged" EVA line) instead of silently
+    // swallowing the click.
+    if (pExt->ParaDrop.Enabled && !pSuper->CanFire())
+        return Continue;
+
     if (pExt->ParaDrop.Enabled
         && SWTypeExt::RunOwnedParaDrop(pSuper->Type, pThis, *pCoords))
     {
