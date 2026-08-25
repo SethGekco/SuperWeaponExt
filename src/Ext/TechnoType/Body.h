@@ -34,10 +34,17 @@ public:
         SWExt::RangeSpec InhibitorRange;
         SWExt::RangeSpec DesignatorRange;
 
+        // Per-AircraftType override of [General] ParadropRadius, in leptons.
+        // <0 means "not overridden". Only meaningful on AircraftTypes; the
+        // engine compares a paradrop plane's distance-to-target against this to
+        // decide when to START dropping (see Ext/SWType/Hooks.ParaDrop.cpp).
+        int ParadropRadius;
+
         explicit ExtData(TechnoTypeClass* pOwner)
             : Extension<TechnoTypeClass>(pOwner)
             , InhibitorRange{}
             , DesignatorRange{}
+            , ParadropRadius(-1)
         { }
 
         virtual ~ExtData() = default;

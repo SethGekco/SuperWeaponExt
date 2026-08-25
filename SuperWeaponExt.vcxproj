@@ -26,6 +26,7 @@
     <ClCompile Include="src\Ext\SWType\Body.cpp" />
     <ClCompile Include="src\Ext\SWType\Hooks.Launch.cpp" />
     <ClCompile Include="src\Ext\SWType\Hooks.Cursor.cpp" />
+    <ClCompile Include="src\Ext\SWType\Hooks.ParaDrop.cpp" />
     <ClCompile Include="src\Commands\Commands.cpp" />
     <ClCompile Include="src\Ext\TechnoType\Body.cpp" />
     <ClCompile Include="YRpp\StaticInits.cpp" />
@@ -39,6 +40,7 @@
   <ItemGroup>
     <ClInclude Include="src\SuperWeaponExt.h" />
     <ClInclude Include="src\SW\Constraint.h" />
+    <ClInclude Include="src\SW\Formation.h" />
     <ClInclude Include="src\Ext\SWType\Body.h" />
     <ClInclude Include="src\Ext\TechnoType\Body.h" />
     <ClInclude Include="src\Commands\FireNamedSW.h" />

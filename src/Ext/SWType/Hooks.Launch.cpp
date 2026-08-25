@@ -81,11 +81,48 @@ DEFINE_HOOK(0x4FAE50, HouseClass_Fire_SW_ConstraintVeto, 0x7)
 
     // Not our superweapon to police — leave it entirely alone. This early-out
     // is what keeps a mod that never touches SWExt.* tags at zero added cost.
-    if (!pExt || !pExt->IsConfigured())
+    if (!pExt || (!pExt->IsConfigured() && !pExt->ParaDrop.Enabled))
         return Continue;
 
-    if (pExt->AllowsFireAt(pThis, *pCoords))
-        return Continue;
+    if (pExt->IsConfigured() && !pExt->AllowsFireAt(pThis, *pCoords))
+    {
+        Debug::Log("[SuperWeaponExt] denied %s for house %d at (%d,%d): "
+                   "inhibitor/designator constraints not met\n",
+                   pSuper->Type->ID, pThis->ArrayIndex, pCoords->X, pCoords->Y);
+
+        R->AL(0);
+        return Deny;
+    }
+
+    // OWNED PARADROP.
+    //
+    // ⚠ Why here and not at SuperClass::Launch (0x6CC390), which would be the
+    // natural seat: Antares hooks 0x6CC390 and dispatches its own SW_ParaDrop
+    // from there — and so do Ares and Phobos, three consumers on one address.
+    // Syringe would chain us behind Antares, which returns "handled" for a
+    // ParaDrop type, so our handler would never run. Injection order decides it,
+    // which is not something to build on.
+    //
+    // Fire_SW's entry is upstream of all of that, so aborting here is the only
+    // way to guarantee Antares' copy does not also fire.
+    //
+    // Sits AFTER the constraint check on purpose: an owned paradrop still obeys
+    // inhibitors and designators.
+    if (pExt->ParaDrop.Enabled
+        && SWTypeExt::RunOwnedParaDrop(pSuper->Type, pThis, *pCoords))
+    {
+        // Aborting skips SuperClass::ClickFire, which is what would normally
+        // spend the charge — so without this the superweapon would stay ready
+        // and could be fired every frame. Reset() is the engine's own "put this
+        // back on the clock" (the same one the spy-infiltration trigger action
+        // uses), so the recharge behaves as the modder configured it.
+        pSuper->Reset();
+
+        R->AL(1);      // report "it fired"
+        return Deny;   // "Deny" here means "skip the engine's own launch"
+    }
+
+    return Continue;
 
     Debug::Log("[SuperWeaponExt] denied %s for house %d at (%d,%d): "
                "inhibitor/designator constraints not met\n",

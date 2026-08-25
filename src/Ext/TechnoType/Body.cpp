@@ -41,6 +41,9 @@ void TechnoTypeExt::ExtData::LoadFromINIFile(CCINIClass* pINI)
 
     ReadRangeSpec(pINI, section, "SWExt.InhibitorRange", this->InhibitorRange);
     ReadRangeSpec(pINI, section, "SWExt.DesignatorRange", this->DesignatorRange);
+
+    // Leptons. 256 leptons = 1 cell; the engine default is 0x400 (4 cells).
+    this->ParadropRadius = pINI->ReadInteger(section, "SWExt.ParadropRadius", -1);
 }
 
 // Type data is re-parsed from the rules INI on every load, so there is nothing

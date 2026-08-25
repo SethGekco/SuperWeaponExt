@@ -274,6 +274,107 @@ void SWTypeExt::ExtData::LoadFromINIFile(CCINIClass* pINI)
         }
     }
 
+    // --- owned paradrop ---
+    this->ParaDrop = ParaDropConfig{};
+    this->ParaDrop.Enabled = pINI->ReadBool(section, "SWExt.ParaDrop", false);
+
+    if (this->ParaDrop.Enabled)
+    {
+        char buf[2048] = {};
+
+        if (pINI->ReadString(section, "SWExt.ParaDrop.Aircraft", "", buf, sizeof(buf)) > 0)
+        {
+            this->ParaDrop.Aircraft = AircraftTypeClass::Find(buf);
+            if (!this->ParaDrop.Aircraft)
+            {
+                Debug::Log("[SuperWeaponExt] [%s] SWExt.ParaDrop.Aircraft: unknown "
+                           "AircraftType '%s'\n", section, buf);
+            }
+        }
+
+        for (auto const& tok : ReadList(pINI, section, "SWExt.ParaDrop.Types"))
+        {
+            if (auto const pT = TechnoTypeClass::Find(tok.c_str()))
+                this->ParaDrop.Types.push_back(pT);
+            else
+                Debug::Log("[SuperWeaponExt] [%s] SWExt.ParaDrop.Types: unknown "
+                           "TechnoType '%s'\n", section, tok.c_str());
+        }
+
+        for (auto const& tok : ReadList(pINI, section, "SWExt.ParaDrop.Nums"))
+            this->ParaDrop.Nums.push_back(std::atoi(tok.c_str()));
+
+        // Types and Nums are positional partners; a mismatch would silently drop
+        // the wrong contents, so pad or trim and say so.
+        if (this->ParaDrop.Nums.size() != this->ParaDrop.Types.size())
+        {
+            Debug::Log("[SuperWeaponExt] [%s] SWExt.ParaDrop: %u Types but %u Nums; "
+                       "padding with 1\n", section,
+                       static_cast<unsigned>(this->ParaDrop.Types.size()),
+                       static_cast<unsigned>(this->ParaDrop.Nums.size()));
+            this->ParaDrop.Nums.resize(this->ParaDrop.Types.size(), 1);
+        }
+
+        this->ParaDrop.Planes  = pINI->ReadInteger(section, "SWExt.ParaDrop.Planes", 1);
+        this->ParaDrop.Spacing = pINI->ReadInteger(section, "SWExt.ParaDrop.Spacing", 4);
+
+        if (pINI->ReadString(section, "SWExt.ParaDrop.Formation", "", buf, sizeof(buf)) > 0)
+        {
+            if (!_strcmpi(buf, "line"))        this->ParaDrop.Kind = SWExt::Formation::Line;
+            else if (!_strcmpi(buf, "column")) this->ParaDrop.Kind = SWExt::Formation::Column;
+            else if (!_strcmpi(buf, "wedge"))  this->ParaDrop.Kind = SWExt::Formation::Wedge;
+            else if (!_strcmpi(buf, "box"))    this->ParaDrop.Kind = SWExt::Formation::Box;
+            else
+            {
+                Debug::Log("[SuperWeaponExt] [%s] SWExt.ParaDrop.Formation='%s' is not "
+                           "recognised (line/column/wedge/box); using line\n", section, buf);
+            }
+        }
+
+        if (pINI->ReadString(section, "SWExt.ParaDrop.Origin", "", buf, sizeof(buf)) > 0)
+        {
+            if (!_strcmpi(buf, "owner"))        this->ParaDrop.Origin = ParaDropOrigin::Owner;
+            else if (!_strcmpi(buf, "nearest")) this->ParaDrop.Origin = ParaDropOrigin::Nearest;
+            else if (!_strcmpi(buf, "north"))   this->ParaDrop.Origin = ParaDropOrigin::North;
+            else if (!_strcmpi(buf, "east"))    this->ParaDrop.Origin = ParaDropOrigin::East;
+            else if (!_strcmpi(buf, "south"))   this->ParaDrop.Origin = ParaDropOrigin::South;
+            else if (!_strcmpi(buf, "west"))    this->ParaDrop.Origin = ParaDropOrigin::West;
+            else
+            {
+                Debug::Log("[SuperWeaponExt] [%s] SWExt.ParaDrop.Origin='%s' is not "
+                           "recognised (owner/nearest/north/east/south/west); "
+                           "using owner\n", section, buf);
+            }
+        }
+
+        // Explicit per-plane offsets as "X,Y|X,Y|..." — these replace the
+        // generated formation entirely.
+        if (pINI->ReadString(section, "SWExt.ParaDrop.Offsets", "", buf, sizeof(buf)) > 0)
+        {
+            const char* p = buf;
+            while (*p)
+            {
+                int x = 0, y = 0;
+                if (sscanf_s(p, "%d,%d", &x, &y) == 2)
+                    this->ParaDrop.Offsets.push_back(SWExt::Offset{ x, y });
+
+                const char* next = strchr(p, '|');
+                if (!next)
+                    break;
+                p = next + 1;
+            }
+        }
+
+        for (auto const& tok : ReadList(pINI, section, "SWExt.ParaDrop.Delays"))
+            this->ParaDrop.Delays.push_back(std::atoi(tok.c_str()));
+
+        Debug::Log("[SuperWeaponExt] [%s] owns its paradrop: %d plane(s), origin %d, "
+                   "%u explicit offset(s), %u delay(s)\n", section,
+                   this->ParaDrop.Planes, static_cast<int>(this->ParaDrop.Origin),
+                   static_cast<unsigned>(this->ParaDrop.Offsets.size()),
+                   static_cast<unsigned>(this->ParaDrop.Delays.size()));
+    }
+
     if (this->HotkeyIndex >= 0)
     {
         using M = SWTypeExt::ExtData::HotkeyTargetMode;

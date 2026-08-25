@@ -7,6 +7,7 @@
  * off-target; this class is only the INI front-end and the container plumbing.
  */
 #include <SW/Constraint.h>
+#include <SW/Formation.h>
 
 #include <GeneralStructures.h>   // CellStruct — SuperWeaponTypeClass.h does not pull it directly
 #include <SuperWeaponTypeClass.h>
@@ -14,6 +15,42 @@
 #include <Utilities/TemplateDef.h>
 
 class HouseClass;
+class AircraftTypeClass;
+class TechnoTypeClass;
+
+// Where the planes of an owned paradrop enter the map from.
+enum class ParaDropOrigin : unsigned char
+{
+    Owner = 0,   // the firing house's StartingEdge — what vanilla/Antares do
+    Nearest,     // the map edge closest to the TARGET cell
+    North, East, South, West,
+};
+
+// A fully-specified paradrop this DLL performs itself, instead of letting
+// Antares' SW_ParaDrop do it. See Hooks.ParaDrop.cpp for why owning it is the
+// only way to control spawn edge and formation.
+struct ParaDropConfig
+{
+    bool Enabled = false;
+
+    AircraftTypeClass*            Aircraft = nullptr;
+    std::vector<TechnoTypeClass*> Types;    // passengers
+    std::vector<int>              Nums;     // count of each, parallel to Types
+
+    int              Planes  = 1;
+    SWExt::Formation Kind    = SWExt::Formation::Line;
+    int              Spacing = 4;
+
+    // Explicit per-plane target offsets; when non-empty these REPLACE the
+    // generated formation, so a modder can hand-place every plane.
+    std::vector<SWExt::Offset> Offsets;
+
+    // Frames to wait before each plane launches, parallel to plane index.
+    // Anything past the end of the list launches immediately.
+    std::vector<int> Delays;
+
+    ParaDropOrigin Origin = ParaDropOrigin::Owner;
+};
 
 // Number of dedicated per-superweapon hotkey slots (src/Commands/FireNamedSW.h).
 // Lives here rather than in the command header so Body.cpp can range-check
@@ -45,6 +82,8 @@ public:
         // wherever the live mouse position lives) has not been verified, and a
         // silently-inert INI key is worse than an absent one.
         int HotkeyIndex;
+
+        ParaDropConfig ParaDrop;
 
         // Does the hotkey FIRE the superweapon outright, or just arm the cursor?
         //   -1 = auto (infer from Action == None), 0 = always arm, 1 = always fire
@@ -148,4 +187,15 @@ public:
     // network-synced SpecialPlace event, exactly as the sidebar cameo does — so
     // it lands in HouseClass::Fire_SW and passes through the Layer 1 veto.
     static void FireByHotkeyIndex(int index);
+
+    // --- owned paradrop (Hooks.ParaDrop.cpp) ---
+
+    // Perform this superweapon's paradrop at `cell`. Returns true when it
+    // handled the launch, in which case the caller must ABORT the normal path
+    // so Antares' own SW_ParaDrop never runs for the same shot.
+    static bool RunOwnedParaDrop(SuperWeaponTypeClass* pType, HouseClass* pFirer,
+                                 const CellStruct& cell);
+
+    // Ticked once per frame; launches any planes whose delay has elapsed.
+    static void TickPendingParaDrops();
 };
