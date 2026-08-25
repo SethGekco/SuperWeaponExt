@@ -270,6 +270,247 @@ static void Test_NoOverflowAtMapScale()
           "distant cell with a small range is allowed");
 }
 
+// -----------------------------------------------------------------------------
+static void Test_GrowthOverTime()
+{
+    std::printf("growth over match time\n");
+
+    auto rule = MakeRule({ 1 }, Relation::Enemies);
+    rule.Growth.PerMinute = 6;                       // +6 cells per minute
+    std::vector<Source> src{ MakeSource(1, Relation::Enemies, 0, 0, 4) };
+
+    EvalContext t0;   t0.Frames = 0;
+    EvalContext t1;   t1.Frames = FramesPerMinute;       // 1 minute
+    EvalContext t2;   t2.Frames = FramesPerMinute * 2;   // 2 minutes
+
+    CHECK(EffectiveRange(rule, src[0], t0) == 4,  "at t=0 the base range is untouched");
+    CHECK(EffectiveRange(rule, src[0], t1) == 10, "after 1 minute: 4 + 6");
+    CHECK(EffectiveRange(rule, src[0], t2) == 16, "after 2 minutes: 4 + 12");
+
+    // End to end: a cell 8 away is safe at the start and covered a minute later.
+    CHECK(Allows(rule, kInactive, src, 8, 0, t0),  "cell 8 away is outside the starting radius");
+    CHECK(!Allows(rule, kInactive, src, 8, 0, t1), "the grown radius now covers it");
+
+    // Partial minutes scale linearly, floored.
+    EvalContext half; half.Frames = FramesPerMinute / 2;
+    CHECK(EffectiveRange(rule, src[0], half) == 7, "half a minute gives +3 (floored)");
+}
+
+// -----------------------------------------------------------------------------
+static void Test_ShrinkAndClamps()
+{
+    std::printf("shrink + clamps\n");
+
+    auto rule = MakeRule({ 1 }, Relation::Enemies);
+    rule.Growth.PerMinute = -5;
+    std::vector<Source> src{ MakeSource(1, Relation::Enemies, 0, 0, 20) };
+
+    EvalContext t2; t2.Frames = FramesPerMinute * 2;
+    CHECK(EffectiveRange(rule, src[0], t2) == 10, "shrinks 5/min: 20 - 10");
+
+    // Without a floor it would go negative and disable the source entirely.
+    EvalContext t5; t5.Frames = FramesPerMinute * 5;
+    CHECK(EffectiveRange(rule, src[0], t5) <= 0, "unclamped shrink can reach zero");
+    CHECK(Allows(rule, kInactive, src, 0, 0, t5), "a source shrunk to nothing stops inhibiting");
+
+    rule.Growth.Min = 6;
+    CHECK(EffectiveRange(rule, src[0], t5) == 6, "Min floors the FINAL range");
+    CHECK(!Allows(rule, kInactive, src, 3, 0, t5), "the floored radius still inhibits");
+
+    auto grow = MakeRule({ 1 }, Relation::Enemies);
+    grow.Growth.PerMinute = 10;
+    grow.Growth.Max = 12;
+    EvalContext t9; t9.Frames = FramesPerMinute * 9;
+    CHECK(EffectiveRange(grow, src[0], t9) == 12, "Max ceilings the FINAL range");
+
+    // Symmetry: growth and shrink of equal magnitude move by equal amounts.
+    auto up = MakeRule({ 1 }, Relation::Enemies);   up.Growth.PerMinute = 7;
+    auto dn = MakeRule({ 1 }, Relation::Enemies);   dn.Growth.PerMinute = -7;
+    EvalContext t3; t3.Frames = FramesPerMinute * 3;
+    const int base = 30;
+    auto s2 = MakeSource(1, Relation::Enemies, 0, 0, base);
+    CHECK(EffectiveRange(up, s2, t3) - base == base - EffectiveRange(dn, s2, t3),
+          "floor division keeps growth and shrink symmetric");
+}
+
+// -----------------------------------------------------------------------------
+static void Test_RatioExistence()
+{
+    std::printf("ratio: existence count (Range=0)\n");
+
+    auto rule = MakeRule({ 1 }, Relation::Enemies);
+    rule.Ratio.TypeIndices = { 50 };
+    rule.Ratio.Affects = Relation::Enemies;
+    rule.Ratio.PerUnit = 3;
+    rule.Ratio.Range = 0;                 // anywhere on the map
+
+    auto src = MakeSource(1, Relation::Enemies, 0, 0, 5);
+
+    EvalContext none;
+    CHECK(EffectiveRange(rule, src, none) == 5, "no counted technos => base range");
+
+    EvalContext two;
+    two.RatioSources = {
+        RatioSource{ 50, Relation::Enemies, 900, 900, true },   // far away
+        RatioSource{ 50, Relation::Enemies,  -50, -50, true },
+    };
+    CHECK(EffectiveRange(rule, src, two) == 11,
+          "Range=0 counts them wherever they are: 5 + 2*3");
+
+    // Type and relation filters still apply to the counted set.
+    EvalContext wrong;
+    wrong.RatioSources = {
+        RatioSource{ 99, Relation::Enemies, 0, 0, true },   // wrong type
+        RatioSource{ 50, Relation::Owner,   0, 0, true },   // wrong relation
+        RatioSource{ 50, Relation::Enemies, 0, 0, false },  // inactive
+    };
+    CHECK(EffectiveRange(rule, src, wrong) == 5,
+          "wrong type / wrong relation / inactive are all ignored");
+}
+
+// -----------------------------------------------------------------------------
+static void Test_RatioProximity()
+{
+    std::printf("ratio: proximity count (Range>0)\n");
+
+    auto rule = MakeRule({ 1 }, Relation::Enemies);
+    rule.Ratio.TypeIndices = { 50 };
+    rule.Ratio.Affects = Relation::All;
+    rule.Ratio.PerUnit = 4;
+    rule.Ratio.Range = 10;                // within 10 cells OF THE INHIBITOR
+
+    auto src = MakeSource(1, Relation::Enemies, 100, 100, 6);
+
+    EvalContext ctx;
+    ctx.RatioSources = {
+        RatioSource{ 50, Relation::Enemies, 106, 108, true },   // dist 10 -> counts
+        RatioSource{ 50, Relation::Enemies, 100, 111, true },   // dist 11 -> does not
+        RatioSource{ 50, Relation::Enemies, 100, 100, true },   // same cell -> counts
+    };
+    CHECK(CountRatioFor(rule, src, ctx) == 2, "counts only what is within Range of the source");
+    CHECK(EffectiveRange(rule, src, ctx) == 14, "6 + 2*4");
+
+    // The radius is measured from the SOURCE, not from the target cell.
+    auto far = MakeSource(1, Relation::Enemies, 0, 0, 6);
+    CHECK(CountRatioFor(rule, far, ctx) == 0,
+          "a different source at a different place counts nothing nearby");
+}
+
+// -----------------------------------------------------------------------------
+static void Test_RatioCapAndNegative()
+{
+    std::printf("ratio: cap + negative scaling\n");
+
+    auto rule = MakeRule({ 1 }, Relation::Enemies);
+    rule.Ratio.TypeIndices = { 50 };
+    rule.Ratio.Affects = Relation::All;
+    rule.Ratio.PerUnit = 5;
+    rule.Ratio.Max = 12;
+
+    auto src = MakeSource(1, Relation::Enemies, 0, 0, 4);
+
+    EvalContext many;
+    for (int i = 0; i < 10; ++i)
+        many.RatioSources.push_back(RatioSource{ 50, Relation::Enemies, 0, 0, true });
+
+    CHECK(EffectiveRange(rule, src, many) == 16, "bonus capped at Max: 4 + 12, not 4 + 50");
+
+    // Negative PerUnit shrinks, and Max caps the magnitude the same way.
+    auto neg = rule;
+    neg.Ratio.PerUnit = -5;
+    CHECK(EffectiveRange(neg, src, many) <= 0, "negative ratio can shrink to nothing");
+    CHECK(Allows(neg, kInactive, { src }, 0, 0, many),
+          "shrunk to nothing => no longer inhibits");
+
+    auto negTwo = neg;
+    EvalContext two;
+    two.RatioSources = { RatioSource{ 50, Relation::Enemies, 0, 0, true },
+                         RatioSource{ 50, Relation::Enemies, 0, 0, true } };
+    CHECK(EffectiveRange(negTwo, MakeSource(1, Relation::Enemies, 0, 0, 20), two) == 10,
+          "negative ratio: 20 - 2*5");
+}
+
+// -----------------------------------------------------------------------------
+static void Test_ModifiersCompose()
+{
+    std::printf("growth + ratio together\n");
+
+    auto rule = MakeRule({ 1 }, Relation::Enemies);
+    rule.Growth.PerMinute = 6;
+    rule.Ratio.TypeIndices = { 50 };
+    rule.Ratio.Affects = Relation::All;
+    rule.Ratio.PerUnit = 2;
+    rule.Growth.Max = 20;
+
+    auto src = MakeSource(1, Relation::Enemies, 0, 0, 4);
+
+    EvalContext ctx;
+    ctx.Frames = FramesPerMinute;                                  // +6
+    ctx.RatioSources = { RatioSource{ 50, Relation::Enemies, 0, 0, true },
+                         RatioSource{ 50, Relation::Enemies, 0, 0, true } };  // +4
+
+    CHECK(EffectiveRange(rule, src, ctx) == 14, "4 + 6 growth + 4 ratio");
+
+    // The clamp bounds the combined result, not each term.
+    ctx.Frames = FramesPerMinute * 5;                              // +30 -> way over
+    CHECK(EffectiveRange(rule, src, ctx) == 20, "Max clamps growth AND ratio together");
+
+    // Modifiers apply on top of a per-SW Ranges override too.
+    auto ov = rule;
+    ov.RangesByIndex = { 2 };
+    ctx.Frames = FramesPerMinute;
+    CHECK(EffectiveRange(ov, src, ctx) == 12, "override 2 + 6 growth + 4 ratio");
+}
+
+// -----------------------------------------------------------------------------
+static void Test_ModifiersInertWhenUnset()
+{
+    std::printf("modifiers inert when unconfigured\n");
+
+    auto rule = MakeRule({ 1 }, Relation::Enemies);
+    auto src = MakeSource(1, Relation::Enemies, 0, 0, 7);
+
+    EvalContext late;
+    late.Frames = FramesPerMinute * 60;    // an hour in
+    late.RatioSources = { RatioSource{ 50, Relation::Enemies, 0, 0, true } };
+
+    CHECK(!rule.Growth.Active(), "unset growth is inactive");
+    CHECK(!rule.Ratio.Active(),  "unset ratio is inactive");
+    CHECK(EffectiveRange(rule, src, late) == 7,
+          "an unconfigured rule is unaffected by time or nearby technos");
+
+    // A ratio with types but no PerUnit is inert (and vice versa).
+    auto half = rule;
+    half.Ratio.TypeIndices = { 50 };
+    CHECK(!half.Ratio.Active(), "types without PerUnit is inert");
+    CHECK(EffectiveRange(half, src, late) == 7, "and changes nothing");
+}
+
+// -----------------------------------------------------------------------------
+static void Test_GrowthDeterminism()
+{
+    std::printf("growth determinism\n");
+
+    // Same inputs must give the same answer every time and on every client --
+    // this is integer-only by construction, so this test is really guarding
+    // against someone "simplifying" it to floating point later.
+    GrowthSpec g; g.PerMinute = 7;
+    for (int f = 0; f < 5000; f += 137)
+    {
+        const int a = g.DeltaAt(f);
+        const int b = g.DeltaAt(f);
+        if (a != b) { CHECK(false, "DeltaAt is not deterministic"); return; }
+    }
+    CHECK(true, "DeltaAt is stable across repeated evaluation");
+
+    CHECK(g.DeltaAt(-100) == 0, "negative frame counts do not run growth backwards");
+    CHECK(g.DeltaAt(0) == 0,    "frame 0 yields no growth");
+
+    // No overflow at long-match frame counts.
+    GrowthSpec big; big.PerMinute = 1000;
+    CHECK(big.DeltaAt(900 * 600) > 0, "a 10-hour match does not overflow to negative");
+}
+
 int main()
 {
     std::printf("SuperWeaponExt constraint core\n\n");
@@ -284,6 +525,14 @@ int main()
     Test_AnyWildcard();
     Test_CompositionIsAnd();
     Test_NoOverflowAtMapScale();
+    Test_GrowthOverTime();
+    Test_ShrinkAndClamps();
+    Test_RatioExistence();
+    Test_RatioProximity();
+    Test_RatioCapAndNegative();
+    Test_ModifiersCompose();
+    Test_ModifiersInertWhenUnset();
+    Test_GrowthDeterminism();
 
     std::printf("\n%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;

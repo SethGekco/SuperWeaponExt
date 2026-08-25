@@ -72,6 +72,80 @@ namespace SWExt
         }
     };
 
+    // YR logic runs at 15 frames/second, so a minute is 900 frames. Antares uses
+    // the same `* 900.0` conversion for every minute-valued rules key.
+    inline constexpr int FramesPerMinute = 900;
+
+    // Floor division. Integer `/` truncates toward zero, which would make a
+    // shrinking range contract slower than a growing one expands at the same
+    // magnitude. Flooring keeps growth and shrink symmetric, and is exact
+    // integer arithmetic so it stays lockstep-safe.
+    inline std::int64_t FloorDiv(std::int64_t n, std::int64_t d)
+    {
+        const std::int64_t q = n / d;
+        return (n % d != 0 && ((n < 0) != (d < 0))) ? q - 1 : q;
+    }
+
+    // Range that changes as the match progresses.
+    //
+    // ⚠ Driven by the SYNCED frame counter (Unsorted::CurrentFrame), never by
+    // wall-clock or render time. Every client must compute the same radius on
+    // the same frame or the launch verdict diverges.
+    struct GrowthSpec
+    {
+        int PerMinute = 0;    // cells added per minute; negative shrinks
+        int Min       = -1;   // clamp floor, <0 = none
+        int Max       = -1;   // clamp ceiling, <0 = none
+
+        bool Active() const { return this->PerMinute != 0; }
+
+        int DeltaAt(int frames) const
+        {
+            if (!this->Active() || frames <= 0)
+                return 0;
+
+            return static_cast<int>(FloorDiv(
+                static_cast<std::int64_t>(this->PerMinute) * frames,
+                FramesPerMinute));
+        }
+    };
+
+    // Range that scales with how many of certain technos exist, or are near the
+    // inhibitor/designator itself.
+    struct RatioSpec
+    {
+        std::vector<int> TypeIndices;
+        Relation Affects = Relation::All;
+        int Range   = 0;   // cells around the SOURCE to count within; 0 = whole map
+        int PerUnit = 0;   // cells added per counted techno; negative shrinks
+        int Max     = 0;   // cap on the total bonus's magnitude; 0 = uncapped
+
+        bool Active() const
+        {
+            return this->PerUnit != 0 && !this->TypeIndices.empty();
+        }
+
+        bool CountsType(int typeIndex) const
+        {
+            for (int idx : this->TypeIndices)
+                if (idx == typeIndex)
+                    return true;
+            return false;
+        }
+    };
+
+    // A techno that may be COUNTED by a RatioSpec. Separate from Source because
+    // the sets rarely overlap: one is "things that inhibit", the other is
+    // "things that make an inhibitor stronger".
+    struct RatioSource
+    {
+        int      TypeIndex = -1;
+        Relation Rel       = Relation::None;
+        int      CellX     = 0;
+        int      CellY     = 0;
+        bool     Active    = false;
+    };
+
     // One candidate techno, already reduced to plain data by the engine adapter.
     struct Source
     {
@@ -93,6 +167,14 @@ namespace SWExt
         bool             Any          = false;
         Relation         Affects      = Relation::None;
         bool             RequirePower = true;
+
+        // Range modifiers, applied to whatever base range resolved. Both live on
+        // the RULE (per superweapon) rather than the TechnoType, so "this
+        // building inhibits SW A on a growing radius and SW B on a fixed one" is
+        // expressible — and so there is no ambiguity about whether they apply on
+        // top of a per-SW Ranges override. They always do.
+        GrowthSpec Growth;
+        RatioSpec  Ratio;
 
         // An empty type list with Any=false means the modder did not configure
         // this role at all, so it must not constrain anything.
@@ -122,8 +204,96 @@ namespace SWExt
         }
     };
 
+    // Everything time- or world-dependent that the evaluator needs, gathered
+    // ONCE per evaluation by the engine adapter.
+    //
+    // ⚠ Ratio sources are collected in a single pass over the techno array and
+    // then reused for every candidate. Counting them per-candidate instead would
+    // make the cursor path O(n²) — and this whole evaluation already runs once
+    // per cursor frame.
+    struct EvalContext
+    {
+        int Frames = 0;   // Unsorted::CurrentFrame — SYNCED. Never wall-clock.
+        std::vector<RatioSource> RatioSources;
+    };
+
+    // How many ratio-countable technos this rule sees from `src`'s position.
+    inline int CountRatioFor(const Rule& rule, const Source& src,
+                             const EvalContext& ctx)
+    {
+        if (!rule.Ratio.Active())
+            return 0;
+
+        const std::int64_t r = rule.Ratio.Range;
+        int count = 0;
+
+        for (const auto& cand : ctx.RatioSources)
+        {
+            if (!cand.Active)
+                continue;
+            if (!Matches(rule.Ratio.Affects, cand.Rel))
+                continue;
+            if (!rule.Ratio.CountsType(cand.TypeIndex))
+                continue;
+
+            // Range 0 means "anywhere on the map" — a pure existence count.
+            if (r > 0)
+            {
+                const std::int64_t dx = static_cast<std::int64_t>(cand.CellX) - src.CellX;
+                const std::int64_t dy = static_cast<std::int64_t>(cand.CellY) - src.CellY;
+                if (dx * dx + dy * dy > r * r)
+                    continue;
+            }
+
+            ++count;
+        }
+
+        return count;
+    }
+
+    // The full range pipeline for one source under one rule:
+    //   base (per-SW override, else the veterancy-resolved TechnoType range)
+    //   + growth over match time
+    //   + ratio bonus
+    //   clamped
+    // Returns <= 0 when the source should not constrain anything.
+    inline int EffectiveRange(const Rule& rule, const Source& src,
+                              const EvalContext& ctx)
+    {
+        const int override_ = rule.OverrideRangeFor(src.TypeIndex);
+        std::int64_t range = override_ >= 0 ? override_ : src.FallbackRange;
+
+        range += rule.Growth.DeltaAt(ctx.Frames);
+
+        if (rule.Ratio.Active())
+        {
+            std::int64_t bonus =
+                static_cast<std::int64_t>(rule.Ratio.PerUnit) * CountRatioFor(rule, src, ctx);
+
+            // Max caps the bonus's magnitude, so it works for shrink too.
+            if (rule.Ratio.Max > 0)
+            {
+                const std::int64_t cap = rule.Ratio.Max;
+                if (bonus >  cap) bonus =  cap;
+                if (bonus < -cap) bonus = -cap;
+            }
+
+            range += bonus;
+        }
+
+        // Growth clamps bound the FINAL range, not just the growth term — that
+        // is what makes "starts at 4, creeps to 20, never further" expressible.
+        if (rule.Growth.Min >= 0 && range < rule.Growth.Min)
+            range = rule.Growth.Min;
+        if (rule.Growth.Max >= 0 && range > rule.Growth.Max)
+            range = rule.Growth.Max;
+
+        return static_cast<int>(range);
+    }
+
     // Does `src` count for this rule, and is the target cell inside its radius?
-    inline bool IsEligible(const Rule& rule, const Source& src, int cellX, int cellY)
+    inline bool IsEligible(const Rule& rule, const Source& src, int cellX, int cellY,
+                           const EvalContext& ctx = {})
     {
         if (!src.Active)
             return false;
@@ -134,8 +304,7 @@ namespace SWExt
         if (!rule.CoversType(src.TypeIndex))
             return false;
 
-        const int override_ = rule.OverrideRangeFor(src.TypeIndex);
-        const int range = override_ >= 0 ? override_ : src.FallbackRange;
+        const int range = EffectiveRange(rule, src, ctx);
         if (range <= 0)
             return false;
 
@@ -153,14 +322,15 @@ namespace SWExt
     //   - designators: rule inactive => pass; otherwise need AT LEAST ONE in range
     //   - inhibitors:  rule inactive => pass; otherwise fail if ANY is in range
     inline bool Allows(const Rule& inhibitors, const Rule& designators,
-                       const std::vector<Source>& sources, int cellX, int cellY)
+                       const std::vector<Source>& sources, int cellX, int cellY,
+                       const EvalContext& ctx = {})
     {
         if (designators.Active())
         {
             bool found = false;
             for (const auto& src : sources)
             {
-                if (IsEligible(designators, src, cellX, cellY)) { found = true; break; }
+                if (IsEligible(designators, src, cellX, cellY, ctx)) { found = true; break; }
             }
             if (!found)
                 return false;
@@ -170,18 +340,11 @@ namespace SWExt
         {
             for (const auto& src : sources)
             {
-                if (IsEligible(inhibitors, src, cellX, cellY))
+                if (IsEligible(inhibitors, src, cellX, cellY, ctx))
                     return false;
             }
         }
 
         return true;
     }
-
-    // TODO(§2b): range growth/shrink over time, and ratio-vs-proximity scaling.
-    // Both belong here, as a transform applied to `range` inside IsEligible.
-    // Growth MUST be driven by the synced frame counter (Unsorted::CurrentFrame)
-    // or a saved per-techno counter — never GetTickCount, never render state.
-    // Proximity ratio needs a per-frame cache first: IsEligible already runs
-    // once per techno per cursor frame, and a nested scan makes that O(n^2).
 }

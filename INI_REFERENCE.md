@@ -117,6 +117,93 @@ for that type.
 
 ---
 
+## Range modifiers — growth over time, and ratio
+
+Both are configured **per superweapon**, on either role, and both apply on top of
+whatever base range resolved — including a per-SW `Ranges` override.
+
+```ini
+[SOMESW]
+; --- grows (or shrinks) as the match runs on ---
+SWExt.Inhibitors.Growth=          ; int, cells per MINUTE; negative shrinks
+SWExt.Inhibitors.Growth.Min=      ; int, clamp floor for the FINAL range
+SWExt.Inhibitors.Growth.Max=      ; int, clamp ceiling for the FINAL range
+
+; --- scales with how many of certain technos exist / are nearby ---
+SWExt.Inhibitors.Ratio=           ; list of TechnoTypes to count
+SWExt.Inhibitors.Ratio.AffectsHouse=all   ; whose technos count
+SWExt.Inhibitors.Ratio.Range=0    ; cells around THE INHIBITOR to count within;
+                                  ;   0 = anywhere on the map (a pure existence count)
+SWExt.Inhibitors.Ratio.PerUnit=0  ; cells added per counted techno; negative shrinks
+SWExt.Inhibitors.Ratio.Max=0      ; cap on the bonus's magnitude; 0 = uncapped
+```
+
+`SWExt.Designators.*` takes the identical set.
+
+### The pipeline
+
+```
+base range   (per-SW Ranges override, else the veterancy-resolved TechnoType range)
+  + Growth   (cells/minute × elapsed match time)
+  + Ratio    (PerUnit × counted technos, magnitude-capped by Ratio.Max)
+  clamped    to Growth.Min / Growth.Max
+```
+
+The clamps bound the **combined** result, not each term — which is what makes
+"starts at 4, creeps up, never past 20" expressible in one line.
+
+### Examples
+
+A jammer whose reach expands through the match, capped:
+
+```ini
+[NUKESPECIAL]
+SWExt.Inhibitors=NASAM
+SWExt.Inhibitors.Ranges=4
+SWExt.Inhibitors.Growth=2         ; +2 cells/min
+SWExt.Inhibitors.Growth.Max=20    ; but never past 20
+```
+
+A shield that is only meaningful when the defender massed AA around it:
+
+```ini
+[LIGHTNINGSTORM]
+SWExt.Inhibitors=NAPOWR
+SWExt.Inhibitors.Ranges=0             ; useless on its own...
+SWExt.Inhibitors.Ratio=NASAM,NAFLAK   ; ...until AA stands near it
+SWExt.Inhibitors.Ratio.Range=8
+SWExt.Inhibitors.Ratio.PerUnit=3
+SWExt.Inhibitors.Ratio.Max=15
+```
+
+Decay — strong at first, fading unless something else props it up:
+
+```ini
+[PSYCHICDOMINATOR]
+SWExt.Inhibitors=YAPSYT
+SWExt.Inhibitors.Ranges=18
+SWExt.Inhibitors.Growth=-3        ; loses 3 cells/min
+SWExt.Inhibitors.Growth.Min=5     ; but never below 5
+```
+
+### Notes that matter
+
+- **Time is the synced frame counter** (`Unsorted::CurrentFrame`), never
+  wall-clock or render time, and the maths is exact integer arithmetic. Both are
+  deliberate: this value gates a network-synced launch decision, so every client
+  must compute the identical radius on the identical frame.
+- **Growth is measured from the start of the match**, not from when the building
+  was placed. Per-object age would need per-instance saved state; this does not.
+- Division **floors**, so growth and shrink of equal magnitude move the radius by
+  equal amounts.
+- A range that reaches `0` or below stops constraining entirely — a shrinking
+  inhibitor eventually just switches off.
+- **Cost**: ratio counting does *not* rescan the techno array per candidate.
+  Sources and countable technos are gathered in one pass and the counted set is
+  reused, so it stays O(n + k·m) rather than O(n²) on the cursor path.
+
+---
+
 ## Semantics
 
 - **Designators** — if none configured, always pass. Otherwise at least one
@@ -148,9 +235,6 @@ cannot disagree.
 
 Present in the design, absent from the code:
 
-- **Growth / shrink over time** — must be driven by the synced frame counter.
-- **Ratio scaling vs. nearby buildings/units** — needs a per-frame cache first;
-  a naive version is O(n²) on the cursor path.
 - Paradrop plane direction and formation.
 - `SW.KeepSelectedAfterFire`.
 - Unit standing orders.

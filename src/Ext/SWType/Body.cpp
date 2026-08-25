@@ -20,6 +20,8 @@
 #include <SuperClass.h>
 #include <TechnoClass.h>
 #include <TechnoTypeClass.h>
+#include <Fundamentals.h>   // Unsorted::CurrentFrame (0xA8ED84)
+#include <Unsorted.h>
 #include <WWMouseClass.h>
 #include <Helpers/Cast.h>
 #include <Utilities/Debug.h>
@@ -151,6 +153,46 @@ namespace
 
         _snprintf_s(key, sizeof(key), "%s.RequirePower", prefix);
         into.RequirePower = pINI->ReadBool(section, key, defaultRequirePower);
+
+        // --- growth over match time ---
+        _snprintf_s(key, sizeof(key), "%s.Growth", prefix);
+        into.Growth.PerMinute = pINI->ReadInteger(section, key, 0);
+
+        _snprintf_s(key, sizeof(key), "%s.Growth.Min", prefix);
+        into.Growth.Min = pINI->ReadInteger(section, key, -1);
+
+        _snprintf_s(key, sizeof(key), "%s.Growth.Max", prefix);
+        into.Growth.Max = pINI->ReadInteger(section, key, -1);
+
+        // --- ratio vs. counted technos ---
+        _snprintf_s(key, sizeof(key), "%s.Ratio", prefix);
+        for (auto const& tok : ReadList(pINI, section, key))
+        {
+            if (auto const pType = TechnoTypeClass::Find(tok.c_str()))
+                into.Ratio.TypeIndices.push_back(pType->GetArrayIndex());
+            else
+                Debug::Log("[SuperWeaponExt] [%s]%s: unknown TechnoType '%s'\n",
+                           section, key, tok.c_str());
+        }
+
+        into.Ratio.Affects = SWExt::Relation::All;
+        _snprintf_s(key, sizeof(key), "%s.Ratio.AffectsHouse", prefix);
+        ParseRelation(pINI, section, key, into.Ratio.Affects);
+
+        _snprintf_s(key, sizeof(key), "%s.Ratio.Range", prefix);
+        into.Ratio.Range = pINI->ReadInteger(section, key, 0);
+
+        _snprintf_s(key, sizeof(key), "%s.Ratio.PerUnit", prefix);
+        into.Ratio.PerUnit = pINI->ReadInteger(section, key, 0);
+
+        _snprintf_s(key, sizeof(key), "%s.Ratio.Max", prefix);
+        into.Ratio.Max = pINI->ReadInteger(section, key, 0);
+
+        if (!into.Ratio.TypeIndices.empty() && into.Ratio.PerUnit == 0)
+        {
+            Debug::Log("[SuperWeaponExt] [%s] %s.Ratio lists types but %s.Ratio.PerUnit "
+                       "is 0, so the ratio does nothing\n", section, prefix, prefix);
+        }
     }
 }
 
@@ -274,6 +316,20 @@ bool SWTypeExt::ExtData::AllowsFireAt(HouseClass* pFirer, const CellStruct& cell
     std::vector<SWExt::Source> sources;
     sources.reserve(64);
 
+    SWExt::EvalContext ctx;
+    // The SYNCED frame counter. Growth must never key off wall-clock or render
+    // time, or clients disagree about the radius and therefore the verdict.
+    ctx.Frames = Unsorted::CurrentFrame;
+
+    const bool wantRatio = this->Inhibitors.Ratio.Active()
+                        || this->Designators.Ratio.Active();
+    if (wantRatio)
+        ctx.RatioSources.reserve(64);
+
+    // ONE pass collects both kinds. Ratio counting deliberately does NOT rescan
+    // the array per candidate — that is what would make the cursor path O(n²),
+    // and this whole function already runs once per cursor frame.
+    //
     // TechnoClass::Array is DEFINE_REFERENCE (a reference to the vector, not a
     // pointer to it) — hence `.Count`, not `->Count`.
     for (int i = 0; i < TechnoClass::Array.Count; ++i)
@@ -288,29 +344,56 @@ bool SWTypeExt::ExtData::AllowsFireAt(HouseClass* pFirer, const CellStruct& cell
 
         const int typeIndex = pType->GetArrayIndex();
 
-        // Skip anything neither rule could possibly care about. This is the
-        // cheap filter that keeps the per-frame cost near Antares' own.
-        if (!this->Inhibitors.CoversType(typeIndex) && !this->Designators.CoversType(typeIndex))
+        const bool isSource = this->Inhibitors.CoversType(typeIndex)
+                           || this->Designators.CoversType(typeIndex);
+        const bool isRatio  = wantRatio
+                           && (this->Inhibitors.Ratio.CountsType(typeIndex)
+                            || this->Designators.Ratio.CountsType(typeIndex));
+
+        // Cheap filter: skip anything no rule could possibly care about.
+        if (!isSource && !isRatio)
             continue;
 
-        SWExt::Source src;
-        src.TypeIndex = typeIndex;
-        src.Active = pTechno->IsAlive && pTechno->Health > 0
-                  && !pTechno->InLimbo && !pTechno->Deactivated;
-
-        if (!src.Active)
+        if (!(pTechno->IsAlive && pTechno->Health > 0
+              && !pTechno->InLimbo && !pTechno->Deactivated))
+        {
             continue;
+        }
 
         // Relation of this techno's owner TO the firing house. Mind control does
         // not launder an enemy into a friend: Owner is the *current* controller,
         // which is the same call Antares makes.
         HouseClass* const pOwner = pTechno->Owner;
+        SWExt::Relation rel;
         if (pOwner == pFirer)
-            src.Rel = SWExt::Relation::Owner;
+            rel = SWExt::Relation::Owner;
         else if (pFirer->IsAlliedWith(pOwner))
-            src.Rel = SWExt::Relation::Allies;
+            rel = SWExt::Relation::Allies;
         else
-            src.Rel = SWExt::Relation::Enemies;
+            rel = SWExt::Relation::Enemies;
+
+        const auto center = CellClass::Coord2Cell(pTechno->GetCoords());
+
+        if (isRatio)
+        {
+            SWExt::RatioSource rs;
+            rs.TypeIndex = typeIndex;
+            rs.Rel       = rel;
+            rs.CellX     = center.X;
+            rs.CellY     = center.Y;
+            rs.Active    = true;
+            ctx.RatioSources.push_back(rs);
+        }
+
+        if (!isSource)
+            continue;
+
+        SWExt::Source src;
+        src.TypeIndex = typeIndex;
+        src.Active    = true;
+        src.Rel       = rel;
+        src.CellX     = center.X;
+        src.CellY     = center.Y;
 
         src.Vet = pTechno->Veterancy.IsElite()   ? SWExt::Rank::Elite
                 : pTechno->Veterancy.IsVeteran() ? SWExt::Rank::Veteran
@@ -323,10 +406,6 @@ bool SWTypeExt::ExtData::AllowsFireAt(HouseClass* pFirer, const CellStruct& cell
         else
             src.Powered = true;
 
-        const auto center = CellClass::Coord2Cell(pTechno->GetCoords());
-        src.CellX = center.X;
-        src.CellY = center.Y;
-
         // Veterancy-resolved TechnoType range, used when the SW gives no override.
         auto const pTypeExt = TechnoTypeExt::ExtMap.Find(pType);
         const bool isDesignator = this->Designators.CoversType(typeIndex);
@@ -338,7 +417,7 @@ bool SWTypeExt::ExtData::AllowsFireAt(HouseClass* pFirer, const CellStruct& cell
     }
 
     return SWExt::Allows(this->Inhibitors, this->Designators,
-                         sources, cell.X, cell.Y);
+                         sources, cell.X, cell.Y, ctx);
 }
 
 bool SWTypeExt::AllowsCursorAt(SuperWeaponTypeClass* pType, const CellStruct& cell)
