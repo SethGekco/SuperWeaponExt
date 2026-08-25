@@ -274,6 +274,9 @@ void SWTypeExt::ExtData::LoadFromINIFile(CCINIClass* pINI)
         }
     }
 
+    this->KeepSelectedAfterFire =
+        pINI->ReadBool(section, "SWExt.KeepSelectedAfterFire", false);
+
     // --- owned paradrop ---
     this->ParaDrop = ParaDropConfig{};
     this->ParaDrop.Enabled = pINI->ReadBool(section, "SWExt.ParaDrop", false);

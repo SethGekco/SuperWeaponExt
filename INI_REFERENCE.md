@@ -236,7 +236,6 @@ cannot disagree.
 
 Present in the design, absent from the code:
 
-- `SW.KeepSelectedAfterFire`.
 - Unit standing orders.
 
 ---
@@ -464,3 +463,41 @@ them different drop radii.
 - Because owning the launch bypasses the engine's own bookkeeping, the recharge
   timer is reset explicitly via `SuperClass::Reset()`. If a superweapon ever
   stays permanently "Ready" after an owned drop, that is the thing to look at.
+
+---
+
+## Keep the superweapon selected after firing
+
+```ini
+[SOMESW]
+SWExt.KeepSelectedAfterFire=no    ; boolean
+```
+
+Normally the cursor drops the superweapon the moment it fires, so re-firing
+means finding the cameo again. With this set, the cursor keeps holding it —
+useful for a fast- or instantly-recharging superweapon a player is expected to
+use repeatedly. Right-click still puts it away.
+
+Firing while it is still charging does nothing, exactly as clicking the cameo
+early does; the cursor simply stays armed until it is ready again.
+
+### How it works, and why it differs by path
+
+| Superweapon | Mechanism |
+|---|---|
+| owned paradrop (`SWExt.ParaDrop=yes`) | we already replace the launch, so the deselect is simply skipped |
+| everything else | the cursor is **re-armed on the next frame** |
+
+The engine deselects from inside `SuperClass::Launch`, at eleven separate
+`movl $-1` sites — one per superweapon action branch. Suppressing those would
+mean hooking `0x6CC390`, which Antares, Ares *and* Phobos already occupy, so a
+fourth handler there would be injection-order dependent. Re-arming afterwards
+avoids the contention entirely.
+
+The re-arm is **one-shot**: it fires on the frame after the launch and is then
+consumed. Re-arming continuously would fight a player right-clicking to cancel.
+
+It is also local-player-only and never serialized. `Fire_SW` runs on every
+client, so an unguarded version would re-arm your cursor whenever a *remote*
+player fired. The pending-superweapon index is UI state, never read by game
+logic, so per-client mutation is desync-safe.

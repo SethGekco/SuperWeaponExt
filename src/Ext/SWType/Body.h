@@ -85,6 +85,11 @@ public:
 
         ParaDropConfig ParaDrop;
 
+        // Leave the cursor holding this superweapon after it fires, instead of
+        // deselecting. Lets a player re-fire a fast-recharging superweapon
+        // without hunting for the cameo again.
+        bool KeepSelectedAfterFire;
+
         // Does the hotkey FIRE the superweapon outright, or just arm the cursor?
         //   -1 = auto (infer from Action == None), 0 = always arm, 1 = always fire
         //
@@ -127,6 +132,7 @@ public:
             , Inhibitors{}
             , Designators{}
             , HotkeyIndex(-1)
+            , KeepSelectedAfterFire(false)
             , HotkeyFireInstantly(-1)
             , HotkeyTarget(HotkeyTargetMode::Mouse)
             , HotkeyTargetCell{}
@@ -196,6 +202,11 @@ public:
     static bool RunOwnedParaDrop(SuperWeaponTypeClass* pType, HouseClass* pFirer,
                                  const CellStruct& cell);
 
-    // Ticked once per frame; launches any planes whose delay has elapsed.
+    // Ticked once per frame; launches any planes whose delay has elapsed and
+    // re-arms the cursor for a KeepSelectedAfterFire superweapon.
     static void TickPendingParaDrops();
+
+    // Ask for the cursor to be put back on `swIndex` next frame, after the
+    // engine has finished deselecting it. Local-player only.
+    static void RequestKeepSelected(int swIndex);
 };

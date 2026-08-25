@@ -82,8 +82,12 @@ DEFINE_HOOK(0x4FAE50, HouseClass_Fire_SW_ConstraintVeto, 0x7)
 
     // Not our superweapon to police — leave it entirely alone. This early-out
     // is what keeps a mod that never touches SWExt.* tags at zero added cost.
-    if (!pExt || (!pExt->IsConfigured() && !pExt->ParaDrop.Enabled))
+    if (!pExt || (!pExt->IsConfigured()
+                  && !pExt->ParaDrop.Enabled
+                  && !pExt->KeepSelectedAfterFire))
+    {
         return Continue;
+    }
 
     if (pExt->IsConfigured() && !pExt->AllowsFireAt(pThis, *pCoords))
     {
@@ -131,12 +135,25 @@ DEFINE_HOOK(0x4FAE50, HouseClass_Fire_SW_ConstraintVeto, 0x7)
         // reset the local cursor whenever a *remote* player fired. The pending-SW
         // index is local UI state, so touching it per-client is desync-safe —
         // but only if we touch the right client's.
-        if (pThis == HouseClass::CurrentPlayer)
+        // SWExt.KeepSelectedAfterFire=yes simply skips this, leaving the cursor
+        // armed so a fast-recharging superweapon can be fired again without
+        // going back to the cameo.
+        if (pThis == HouseClass::CurrentPlayer && !pExt->KeepSelectedAfterFire)
             DisplayClass::Instance.CurrentSWTypeIndex = -1;
 
         R->AL(1);      // report "it fired"
         return Deny;   // "Deny" here means "skip the engine's own launch"
     }
+
+    // For every OTHER superweapon we let the engine launch normally, so the
+    // engine also performs its own deselect — the eleven `movl $-1` sites inside
+    // SuperClass::Launch. Rather than suppress those (Antares owns 0x6CC390, so
+    // we cannot), re-arm the cursor on the next frame.
+    //
+    // Deliberately a ONE-SHOT request: re-arming every frame would fight the
+    // player right-clicking to put the superweapon away.
+    if (pExt->KeepSelectedAfterFire && pThis == HouseClass::CurrentPlayer)
+        SWTypeExt::RequestKeepSelected(idxSW);
 
     return Continue;
 }

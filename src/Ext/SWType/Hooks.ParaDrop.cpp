@@ -44,6 +44,7 @@
 #include <AircraftClass.h>
 #include <AircraftTypeClass.h>
 #include <CellClass.h>
+#include <DisplayClass.h>
 #include <Fundamentals.h>   // Unsorted::CurrentFrame
 #include <HouseClass.h>
 #include <MapClass.h>
@@ -71,6 +72,11 @@ namespace
     };
 
     std::vector<PendingDrop> g_pending;
+
+    // One-shot cursor re-arm for SWExt.KeepSelectedAfterFire. -1 = nothing
+    // pending. Purely local UI state, so it is never serialized and never
+    // consulted by game logic.
+    int g_keepSelectedIndex = -1;
 
     Edge ToEngineEdge(SWExt::ApproachEdge e)
     {
@@ -305,8 +311,32 @@ bool SWTypeExt::RunOwnedParaDrop(SuperWeaponTypeClass* pType, HouseClass* pFirer
     return launched > 0 || queued > 0;
 }
 
+void SWTypeExt::RequestKeepSelected(int swIndex)
+{
+    g_keepSelectedIndex = swIndex;
+}
+
 void SWTypeExt::TickPendingParaDrops()
 {
+    // Service a pending cursor re-arm first. The engine deselected during
+    // SuperClass::Launch on the frame the superweapon fired; this puts it back.
+    //
+    // Consumed unconditionally, so it only ever fires once — otherwise a player
+    // right-clicking to cancel would be overridden on the very next frame.
+    if (g_keepSelectedIndex >= 0)
+    {
+        const int index = g_keepSelectedIndex;
+        g_keepSelectedIndex = -1;
+
+        auto const pPlayer = HouseClass::CurrentPlayer;
+        if (pPlayer && DisplayClass::Instance.CurrentSWTypeIndex == -1)
+        {
+            // Only re-arm something the player still actually owns.
+            if (pPlayer->Supers.GetItemOrDefault(index))
+                DisplayClass::Instance.CurrentSWTypeIndex = index;
+        }
+    }
+
     if (g_pending.empty())
         return;
 
