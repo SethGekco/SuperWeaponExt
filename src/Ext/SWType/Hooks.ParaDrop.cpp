@@ -39,12 +39,15 @@
  */
 #include "Body.h"
 
+#include <Ext/TechnoType/Body.h>   // TechnoTypeExt — the ParadropRadius override
+
 #include <AircraftClass.h>
 #include <AircraftTypeClass.h>
 #include <CellClass.h>
 #include <Fundamentals.h>   // Unsorted::CurrentFrame
 #include <HouseClass.h>
 #include <MapClass.h>
+#include <RulesClass.h>   // RulesClass::Instance->ParadropRadius
 #include <TechnoTypeClass.h>
 #include <Unsorted.h>       // Unsorted::ScenarioInit
 #include <Utilities/Debug.h>
