@@ -409,6 +409,14 @@ void SWTypeExt::ExtData::LoadFromINIFile(CCINIClass* pINI)
 
     if (this->IsConfigured())
     {
+        Debug::Log("[SuperWeaponExt] [%s] inhibitors: growth %d/1000 per min "
+                   "(min %d max %d), ratio %u type(s) x%d within %d\n",
+                   section,
+                   this->Inhibitors.Growth.MilliPerMinute,
+                   this->Inhibitors.Growth.Min, this->Inhibitors.Growth.Max,
+                   static_cast<unsigned>(this->Inhibitors.Ratio.TypeIndices.size()),
+                   this->Inhibitors.Ratio.PerUnit, this->Inhibitors.Ratio.Range);
+
         Debug::Log("[SuperWeaponExt] [%s] %u inhibitor type(s)%s, "
                    "%u designator type(s)%s\n", section,
                    static_cast<unsigned>(this->Inhibitors.TypeIndices.size()),
@@ -577,6 +585,21 @@ void SWTypeExt::ExtData::LogDenial(HouseClass* pFirer, const CellStruct& cell) c
         Debug::Log(") [frame %d]\n", ctx.Frames);
         return;   // one explanation is enough
     }
+}
+
+void SWTypeExt::LogCursorDenial(SuperWeaponTypeClass* pType, const CellStruct& cell)
+{
+    if (!pType)
+        return;
+
+    auto const pExt = SWTypeExt::ExtMap.Find(pType);
+    auto const pPlayer = HouseClass::CurrentPlayer;
+    if (!pExt || !pPlayer)
+        return;
+
+    Debug::Log("[SuperWeaponExt] %s refused at (%d,%d)\n",
+               pType->ID, cell.X, cell.Y);
+    pExt->LogDenial(pPlayer, cell);
 }
 
 bool SWTypeExt::AllowsCursorAt(SuperWeaponTypeClass* pType, const CellStruct& cell)

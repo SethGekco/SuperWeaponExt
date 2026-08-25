@@ -94,6 +94,11 @@ DEFINE_HOOK(0x4AC21C, DisplayClass_LeftMouseButtonUp_ConstraintVeto, 0x6)
     if (SWTypeExt::AllowsCursorAt(pSWType, cell))
         return Continue;
 
+    // One line per refused CLICK. This is the only place a player-initiated
+    // refusal is observable: the veto below stops the SpecialPlace event ever
+    // being queued, so the launch path never sees it.
+    SWTypeExt::LogCursorDenial(pSWType, cell);
+
     // Fall into the same path the game uses when no superweapon resolved, so the
     // SpecialPlace event is never queued in the first place. Layer 1 would have
     // caught it anyway, but not queuing beats queuing-and-vetoing: it avoids a

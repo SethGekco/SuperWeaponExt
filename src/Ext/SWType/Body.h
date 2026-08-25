@@ -163,8 +163,11 @@ public:
         // Explain a refusal: names the inhibitor that blocked, its resolved
         // radius, and how that radius was arrived at (base / growth / ratio).
         //
-        // Called ONLY from the launch path, never the cursor path -- the cursor
-        // re-evaluates every frame and would flood debug.log.
+        // ⚠ Call from a per-CLICK site, not the per-frame cursor evaluation.
+        // Originally wired to the launch path, where it never fired once: the
+        // Layer 2 click veto stops the SpecialPlace event being queued, so
+        // Fire_SW is never reached for a player-initiated refusal. Zero denial
+        // lines were logged across every test session because of that.
         void LogDenial(HouseClass* pFirer, const CellStruct& cell) const;
 
         // Reduce the live techno array to the evaluator's plain-data view.
@@ -194,6 +197,12 @@ public:
     // because the launch path also runs for AI and remote players. Both routes
     // reach the same evaluator, which is what stops the layers disagreeing.
     static bool AllowsCursorAt(SuperWeaponTypeClass* pType, const CellStruct& cell);
+
+    // Explain a CLICK that was refused by the cursor layer. Fires once per
+    // click, which is why the diagnostic lives here and not on the launch path:
+    // Layer 2 stops the click before an event is ever queued, so Fire_SW is
+    // never reached and a launch-side log would stay silent forever.
+    static void LogCursorDenial(SuperWeaponTypeClass* pType, const CellStruct& cell);
 
     // --- dedicated per-superweapon hotkeys (src/Commands/FireNamedSW.h) ---
 
