@@ -95,6 +95,10 @@ DEFINE_HOOK(0x4FAE50, HouseClass_Fire_SW_ConstraintVeto, 0x7)
                    "inhibitor/designator constraints not met\n",
                    pSuper->Type->ID, pThis->ArrayIndex, pCoords->X, pCoords->Y);
 
+        // Explain WHICH inhibitor blocked and how its radius was arrived at.
+        // Only on a real refused launch, never the per-frame cursor path.
+        pExt->LogDenial(pThis, *pCoords);
+
         R->AL(0);
         return Deny;
     }

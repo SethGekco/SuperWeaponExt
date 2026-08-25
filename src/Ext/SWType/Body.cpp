@@ -412,15 +412,17 @@ void SWTypeExt::ExtData::LoadFromINIFile(CCINIClass* pINI)
 // =============================================================================
 // The decision
 // =============================================================================
-bool SWTypeExt::ExtData::AllowsFireAt(HouseClass* pFirer, const CellStruct& cell) const
+// Reduce the live techno array to the plain-data view the evaluator needs.
+// Shared by the verdict and the denial diagnostic so they can never disagree
+// about what the world looked like.
+void SWTypeExt::ExtData::GatherSources(HouseClass* pFirer,
+                                       std::vector<SWExt::Source>& sources,
+                                       SWExt::EvalContext& ctx) const
 {
-    if (!this->IsConfigured() || !pFirer)
-        return true;
+    if (!pFirer)
+        return;
 
-    std::vector<SWExt::Source> sources;
     sources.reserve(64);
-
-    SWExt::EvalContext ctx;
     // The SYNCED frame counter. Growth must never key off wall-clock or render
     // time, or clients disagree about the radius and therefore the verdict.
     ctx.Frames = Unsorted::CurrentFrame;
@@ -520,8 +522,52 @@ bool SWTypeExt::ExtData::AllowsFireAt(HouseClass* pFirer, const CellStruct& cell
         sources.push_back(src);
     }
 
+}
+
+bool SWTypeExt::ExtData::AllowsFireAt(HouseClass* pFirer, const CellStruct& cell) const
+{
+    if (!this->IsConfigured() || !pFirer)
+        return true;
+
+    std::vector<SWExt::Source> sources;
+    SWExt::EvalContext ctx;
+    this->GatherSources(pFirer, sources, ctx);
+
     return SWExt::Allows(this->Inhibitors, this->Designators,
                          sources, cell.X, cell.Y, ctx);
+}
+
+void SWTypeExt::ExtData::LogDenial(HouseClass* pFirer, const CellStruct& cell) const
+{
+    if (!pFirer || !this->Inhibitors.Active())
+        return;
+
+    // Rebuild the same view the evaluator saw. Cheap: this runs once, on a shot
+    // that was actually refused.
+    std::vector<SWExt::Source> sources;
+    SWExt::EvalContext ctx;
+    this->GatherSources(pFirer, sources, ctx);
+
+    for (auto const& src : sources)
+    {
+        if (!SWExt::IsEligible(this->Inhibitors, src, cell.X, cell.Y, ctx))
+            continue;
+
+        const int override_ = this->Inhibitors.OverrideRangeFor(src.TypeIndex);
+        const int base      = override_ >= 0 ? override_ : src.FallbackRange;
+        const int growth    = this->Inhibitors.Growth.DeltaAt(ctx.Frames);
+        const int count     = SWExt::CountRatioFor(this->Inhibitors, src, ctx);
+        const int final_    = SWExt::EffectiveRange(this->Inhibitors, src, ctx);
+
+        auto const pType = TechnoTypeClass::Array.GetItemOrDefault(src.TypeIndex);
+
+        Debug::Log("[SuperWeaponExt]   blocked by %s at (%d,%d): radius %d "
+                   "(base %d + growth %d + ratio %d*%d counted", 
+                   pType ? pType->ID : "?", src.CellX, src.CellY,
+                   final_, base, growth, this->Inhibitors.Ratio.PerUnit, count);
+        Debug::Log(") [frame %d]\n", ctx.Frames);
+        return;   // one explanation is enough
+    }
 }
 
 bool SWTypeExt::AllowsCursorAt(SuperWeaponTypeClass* pType, const CellStruct& cell)

@@ -160,6 +160,18 @@ public:
         // permitted.
         bool AllowsFireAt(HouseClass* pFirer, const CellStruct& cell) const;
 
+        // Explain a refusal: names the inhibitor that blocked, its resolved
+        // radius, and how that radius was arrived at (base / growth / ratio).
+        //
+        // Called ONLY from the launch path, never the cursor path -- the cursor
+        // re-evaluates every frame and would flood debug.log.
+        void LogDenial(HouseClass* pFirer, const CellStruct& cell) const;
+
+        // Reduce the live techno array to the evaluator's plain-data view.
+        void GatherSources(HouseClass* pFirer,
+                           std::vector<SWExt::Source>& sources,
+                           SWExt::EvalContext& ctx) const;
+
     private:
         template <typename T> void Serialize(T& stm);
     };
