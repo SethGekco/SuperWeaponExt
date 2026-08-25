@@ -1,7 +1,8 @@
 # SuperWeaponExt — INI reference
 
 **Implemented:** inhibitors and designators (enforced at launch *and* on the
-cursor), plus dedicated per-superweapon hotkeys. Everything else in
+cursor, with growth/ratio range modifiers), dedicated per-superweapon hotkeys,
+and an owned paradrop with spawn-edge and formation control. Everything else in
 `FINDINGS.md` is not wired yet — see "Not implemented yet" below.
 
 ## Why a separate `SWExt.*` namespace
@@ -235,7 +236,6 @@ cannot disagree.
 
 Present in the design, absent from the code:
 
-- Paradrop plane direction and formation.
 - `SW.KeepSelectedAfterFire`.
 - Unit standing orders.
 
@@ -365,3 +365,102 @@ resolved on the pressing client and then travels *inside* the queued
 `SpecialPlace` event, so every client executes the same cell — exactly how a
 normal cameo click already behaves. What would be unsafe is reading the mouse
 during event *execution*; we do not.
+
+---
+
+## Owned paradrop
+
+`SWExt.ParaDrop=yes` makes **SuperWeaponExt** perform the drop instead of
+Antares. Antares' own `SW_ParaDrop` never runs for that superweapon.
+
+This is the one feature here that is *not* a veto layer. Antares constructs the
+aircraft inside its own `SendPDPlane`, so there is no engine address to extend —
+its entire spawn decision is `pOwner->StartingEdge` plus a **random**
+`PickCellOnEdge`, called independently per plane. That is why stock multi-plane
+drops converge from scattered points. Owning the launch is the only way to
+change it.
+
+```ini
+[SOMESW]
+SWExt.ParaDrop=yes
+SWExt.ParaDrop.Aircraft=PDPLANE     ; AircraftType that carries the drop
+SWExt.ParaDrop.Types=E1,E2          ; passengers (infantry / vehicles only)
+SWExt.ParaDrop.Nums=3,2             ; counts, positional against Types
+
+SWExt.ParaDrop.Origin=owner         ; owner | nearest | north | east | south | west
+SWExt.ParaDrop.Planes=1             ; how many planes
+SWExt.ParaDrop.Formation=line       ; line | column | wedge | box
+SWExt.ParaDrop.Spacing=4            ; cells between drop points
+SWExt.ParaDrop.Offsets=             ; "X,Y|X,Y|..." — REPLACES Formation
+SWExt.ParaDrop.Delays=              ; frames to wait per plane, e.g. 0,0,45,90
+```
+
+### Spawn locale
+
+| `Origin` | Planes enter from |
+|---|---|
+| `owner` *(default)* | the firing house's starting edge — what Antares does |
+| `nearest` | the map edge **closest to the target**, so they come from the side you fired at |
+| `north` / `east` / `south` / `west` | that edge, always |
+
+### Formation
+
+Patterns are laid out in **approach space** — "forward" is the flight direction,
+not a map axis — so a `line` reads as planes abreast and a `column` as
+nose-to-tail regardless of which edge they entered from.
+
+| `Formation` | Shape |
+|---|---|
+| `line` | abreast, perpendicular to the flight path, centred on the target |
+| `column` | nose-to-tail; trailing planes naturally arrive later |
+| `wedge` | a V, apex leading |
+| `box` | centred grid |
+
+`Offsets` overrides the pattern entirely when you want to hand-place each plane:
+
+```ini
+SWExt.ParaDrop.Offsets=0,0|6,-3|-6,-3     ; three planes, explicit cells
+```
+
+`Delays` staggers launches in frames (15 frames = 1 second), positional per
+plane. Anything past the end of the list launches immediately.
+
+```ini
+SWExt.ParaDrop.Planes=5
+SWExt.ParaDrop.Delays=0,0,0,45,90         ; three now, then two more waves
+```
+
+> **Limitation:** delayed planes live in an in-memory queue that is **not saved**.
+> Saving mid-drop and reloading loses any plane that had not launched. Every
+> client loses the identical entries, so it cannot desync — but the planes are
+> gone.
+
+### When the planes start dropping
+
+The engine begins releasing passengers once a plane's distance to its target
+falls below `[General] ParadropRadius` — **one value governing every paradrop in
+the game** (default `0x400`, i.e. 4 cells). Override it per plane type:
+
+```ini
+[SOMEAIRCRAFT]
+SWExt.ParadropRadius=2048     ; leptons; 256 = 1 cell. Starts dropping 8 cells out.
+```
+
+A larger radius starts the drop earlier and spreads the units over a longer
+run-in; a smaller one drops them tightly on the target.
+
+This is per **AircraftType**, not per superweapon, because the engine's decision
+point only knows the plane. Give two superweapons different plane types to give
+them different drop radii.
+
+### Notes
+
+- The drop still obeys `SWExt.Inhibitors` / `SWExt.Designators` — the constraint
+  check runs first.
+- Only infantry and vehicles can be dropped; anything else is skipped with a log
+  line (the same restriction Antares enforces).
+- **Do not also configure Antares' `ParaDrop.*` keys** on the same superweapon.
+  Ours replaces the launch entirely, so those would simply be ignored.
+- Because owning the launch bypasses the engine's own bookkeeping, the recharge
+  timer is reset explicitly via `SuperClass::Reset()`. If a superweapon ever
+  stays permanently "Ready" after an owned drop, that is the thing to look at.
