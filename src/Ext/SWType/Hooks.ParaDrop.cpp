@@ -242,7 +242,7 @@ bool SWTypeExt::RunOwnedParaDrop(SuperWeaponTypeClass* pType, HouseClass* pFirer
     if (offsets.empty())
     {
         offsets = SWExt::BuildFormation(cfg.Kind, cfg.Planes, cfg.Spacing,
-                                        FromEngineEdge(entry));
+                                        FromEngineEdge(entry), cfg.Align);
     }
 
     // Pick the entry cell ONCE for the whole drop, then spread the planes along

@@ -41,6 +41,10 @@ struct ParaDropConfig
     SWExt::Formation Kind    = SWExt::Formation::Line;
     int              Spacing = 4;
 
+    // Which space the sideways spread is laid out in. Screen is the default
+    // because it is the only one that LOOKS consistent — see FormationAlign.
+    SWExt::FormationAlign Align = SWExt::FormationAlign::Screen;
+
     // Explicit per-plane target offsets; when non-empty these REPLACE the
     // generated formation, so a modder can hand-place every plane.
     std::vector<SWExt::Offset> Offsets;

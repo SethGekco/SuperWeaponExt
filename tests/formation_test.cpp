@@ -6,6 +6,7 @@
 #include <SW/Formation.h>
 
 #include <cstdio>
+#include <cmath>
 
 using namespace SWExt;
 
@@ -86,15 +87,22 @@ static void Test_CountAlwaysMatches()
 // -----------------------------------------------------------------------------
 static void Test_LineIsPerpendicular()
 {
-    std::printf("line: abreast, perpendicular to flight\n");
+    std::printf("line: abreast, perpendicular to flight (CELL space)\n");
+
+    // These pin CELL-space rotation specifically, so they pass the mode
+    // explicitly rather than relying on the default. When the default moved to
+    // Screen alignment these failed, which is the suite doing its job — a
+    // behaviour change should never slip through as a silent default shift.
 
     // Entering from the north, planes fly SOUTH (+Y), so a line spreads on X.
-    auto north = BuildFormation(Formation::Line, 3, 4, ApproachEdge::North);
+    auto north = BuildFormation(Formation::Line, 3, 4, ApproachEdge::North,
+                                FormationAlign::Cell);
     CHECK(Contains(north, -4, 0) && Contains(north, 0, 0) && Contains(north, 4, 0),
           "north approach spreads the line along X");
 
     // Entering from the west, planes fly EAST (+X), so the line spreads on Y.
-    auto west = BuildFormation(Formation::Line, 3, 4, ApproachEdge::West);
+    auto west = BuildFormation(Formation::Line, 3, 4, ApproachEdge::West,
+                               FormationAlign::Cell);
     CHECK(Contains(west, 0, -4) && Contains(west, 0, 0) && Contains(west, 0, 4),
           "west approach spreads the line along Y instead");
 
@@ -198,6 +206,99 @@ static void Test_NearestEdge()
           "the exact centre is deterministic");
 }
 
+// -----------------------------------------------------------------------------
+namespace
+{
+    // The engine's isometric transform (TacticalClass::AdjustForZShapeMove),
+    // in half-cell units: cell +X -> screen (+2,+1), cell +Y -> screen (-2,+1).
+    struct Screen { double X; double Y; };
+    Screen ToScreen(const Offset& cell)
+    {
+        return Screen{ 2.0 * cell.X - 2.0 * cell.Y,
+                       1.0 * cell.X + 1.0 * cell.Y };
+    }
+
+    // |cos| of the angle between two screen vectors. 0 == perpendicular.
+    double ScreenAbsCos(const Offset& a, const Offset& b)
+    {
+        const Screen sa = ToScreen(a), sb = ToScreen(b);
+        const double dot = sa.X * sb.X + sa.Y * sb.Y;
+        const double la = std::sqrt(sa.X * sa.X + sa.Y * sa.Y);
+        const double lb = std::sqrt(sb.X * sb.X + sb.Y * sb.Y);
+        if (la < 1e-9 || lb < 1e-9)
+            return 1.0;
+        return std::fabs(dot / (la * lb));
+    }
+}
+
+static void Test_ScreenAlignmentLooksPerpendicular()
+{
+    std::printf("screen alignment: line looks abreast from every edge\n");
+
+    const ApproachEdge edges[] = { ApproachEdge::North, ApproachEdge::East,
+                                   ApproachEdge::South, ApproachEdge::West };
+
+    // This is the whole point of FormationAlign::Screen. A cell-space-perpendicular
+    // line projects to ~127 degrees on screen, which reads as swept/trailing;
+    // screen alignment should come out near 90 degrees (|cos| ~ 0) everywhere.
+    for (auto e : edges)
+    {
+        Offset fwd{}, rgt{};
+        ApproachAxes(e, fwd, rgt);
+
+        auto screenLine = BuildFormation(Formation::Line, 3, 8, e, FormationAlign::Screen);
+        auto cellLine   = BuildFormation(Formation::Line, 3, 8, e, FormationAlign::Cell);
+
+        // Spread vector = outermost plane relative to the centre one.
+        const Offset screenSpread = screenLine.front();
+        const Offset cellSpread   = cellLine.front();
+
+        const double screenCos = ScreenAbsCos(fwd, screenSpread);
+        const double cellCos   = ScreenAbsCos(fwd, cellSpread);
+
+        CHECK(screenCos < 0.15,
+              "screen-aligned spread is near-perpendicular to the flight path ON SCREEN");
+        CHECK(cellCos > 0.4,
+              "cell-aligned spread is visibly skewed on screen -- the reported symptom");
+        CHECK(screenCos < cellCos,
+              "screen alignment is strictly squarer on screen than cell alignment");
+    }
+}
+
+// -----------------------------------------------------------------------------
+static void Test_AlignmentModes()
+{
+    std::printf("alignment modes\n");
+
+    // Map alignment must NOT rotate: same offsets whichever edge is used.
+    auto north = BuildFormation(Formation::Line, 3, 4, ApproachEdge::North, FormationAlign::Map);
+    auto east  = BuildFormation(Formation::Line, 3, 4, ApproachEdge::East,  FormationAlign::Map);
+    auto west  = BuildFormation(Formation::Line, 3, 4, ApproachEdge::West,  FormationAlign::Map);
+    CHECK(north == east && north == west,
+          "Map alignment produces identical offsets regardless of entry edge");
+
+    // Cell alignment DOES rotate (the pre-existing behaviour).
+    auto cN = BuildFormation(Formation::Line, 3, 4, ApproachEdge::North, FormationAlign::Cell);
+    auto cE = BuildFormation(Formation::Line, 3, 4, ApproachEdge::East,  FormationAlign::Cell);
+    CHECK(!(cN == cE), "Cell alignment rotates with the entry edge");
+
+    // Screen alignment rotates too, and still yields distinct drop cells.
+    for (auto e : { ApproachEdge::North, ApproachEdge::East,
+                    ApproachEdge::South, ApproachEdge::West })
+    {
+        auto f = BuildFormation(Formation::Line, 5, 6, e, FormationAlign::Screen);
+        CHECK(static_cast<int>(f.size()) == 5, "screen alignment keeps the plane count");
+        CHECK(AllDistinct(f), "screen-aligned planes do not share a drop cell");
+    }
+
+    // A column trails along the true flight path in every mode -- only the
+    // sideways axis is corrected, because the path itself already looks right.
+    auto colScreen = BuildFormation(Formation::Column, 3, 5, ApproachEdge::North,
+                                    FormationAlign::Screen);
+    CHECK(colScreen[1] == (Offset{ 0, -5 }),
+          "column still trails straight back along the flight vector");
+}
+
 int main()
 {
     std::printf("SuperWeaponExt paradrop formation\n\n");
@@ -209,6 +310,8 @@ int main()
     Test_WedgeAndBox();
     Test_ApproachAxes();
     Test_NearestEdge();
+    Test_ScreenAlignmentLooksPerpendicular();
+    Test_AlignmentModes();
 
     std::printf("\n%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;

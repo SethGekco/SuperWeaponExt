@@ -343,6 +343,26 @@ void SWTypeExt::ExtData::LoadFromINIFile(CCINIClass* pINI)
             }
         }
 
+        // Accepts yes/no as well as the explicit modes, because "should the
+        // formation follow the direction it comes from?" is naturally a boolean
+        // question even though there are two distinct ways to say yes.
+        if (pINI->ReadString(section, "SWExt.ParaDrop.Formation.Align", "", buf, sizeof(buf)) > 0)
+        {
+            using A = SWExt::FormationAlign;
+            if (!_strcmpi(buf, "screen") || !_strcmpi(buf, "yes") || !_strcmpi(buf, "true"))
+                this->ParaDrop.Align = A::Screen;
+            else if (!_strcmpi(buf, "cell"))
+                this->ParaDrop.Align = A::Cell;
+            else if (!_strcmpi(buf, "map") || !_strcmpi(buf, "no") || !_strcmpi(buf, "false"))
+                this->ParaDrop.Align = A::Map;
+            else
+            {
+                Debug::Log("[SuperWeaponExt] [%s] SWExt.ParaDrop.Formation.Align='%s' is "
+                           "not recognised (screen/cell/map, or yes/no); using screen\n",
+                           section, buf);
+            }
+        }
+
         if (pINI->ReadString(section, "SWExt.ParaDrop.Origin", "", buf, sizeof(buf)) > 0)
         {
             if (!_strcmpi(buf, "owner"))        this->ParaDrop.Origin = ParaDropOrigin::Owner;

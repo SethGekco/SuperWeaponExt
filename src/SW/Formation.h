@@ -27,6 +27,25 @@ namespace SWExt
         West  = 3,
     };
 
+    // Which space the pattern's SIDEWAYS axis is laid out in.
+    //
+    // ⚠ This exists because RA2's isometric projection is not conformal: a right
+    // angle in cell space is NOT a right angle on screen. Projecting the two cell
+    // axes gives
+    //     cell +X -> screen (+2, +1)
+    //     cell +Y -> screen (-2, +1)
+    // whose dot product is -3, i.e. ~127 degrees apart, not 90. So a line built
+    // perpendicular to the flight path IN CELL SPACE looks swept back from some
+    // edges and swept forward from others. Reported in play as "a row in some
+    // directions, trailing behind each other in others" — the rotation was
+    // working, just in the space the player does not see.
+    enum class FormationAlign : unsigned char
+    {
+        Screen = 0,  // perpendicular ON SCREEN — looks abreast from every edge
+        Cell,        // perpendicular in cell space (mathematically tidy, looks skewed)
+        Map,         // never rotates; the spread is always along cell +X
+    };
+
     enum class Formation : unsigned char
     {
         Line = 0,   // abreast, perpendicular to the flight path
@@ -61,12 +80,35 @@ namespace SWExt
         }
     }
 
+    // The cell-space direction that appears PERPENDICULAR TO THE FLIGHT PATH on
+    // screen, as an integer numerator over ScreenRightDen.
+    //
+    // Derived by projecting the flight vector to screen with the engine's own
+    // transform, rotating 90 degrees there, and converting back through the
+    // inverse of the 2x2 isometric matrix. For a 2:1 projection that yields
+    // (1.25, 0.75) for a north approach and (0.75, 1.25) for an east one —
+    // scaled by 4 below to stay in integers.
+    inline constexpr int ScreenRightDen = 4;
+
+    inline Offset ScreenRightNumerator(ApproachEdge edge)
+    {
+        switch (edge)
+        {
+        case ApproachEdge::East:  return {  3,  5 };
+        case ApproachEdge::West:  return { -3, -5 };
+        case ApproachEdge::South: return { -5, -3 };
+        case ApproachEdge::North:
+        default:                  return {  5,  3 };
+        }
+    }
+
     // Per-plane target offsets relative to the superweapon's aim cell.
     //
     // `spacing` is in cells. A count of 1 always yields a single {0,0} so a
     // one-plane drop lands exactly where the player clicked.
     inline std::vector<Offset> BuildFormation(Formation kind, int count,
-                                              int spacing, ApproachEdge edge)
+                                              int spacing, ApproachEdge edge,
+                                              FormationAlign align = FormationAlign::Screen)
     {
         std::vector<Offset> out;
         if (count <= 0)
@@ -83,11 +125,30 @@ namespace SWExt
         Offset fwd{}, rgt{};
         ApproachAxes(edge, fwd, rgt);
 
+        // `forward` is always the true flight vector — a column trails along the
+        // actual path, which already looks right on screen. Only the SIDEWAYS
+        // axis needs correcting, because that is the one the eye compares
+        // against the flight direction.
+        Offset rightNum = rgt;
+        int    rightDen = 1;
+
+        if (align == FormationAlign::Screen)
+        {
+            rightNum = ScreenRightNumerator(edge);
+            rightDen = ScreenRightDen;
+        }
+        else if (align == FormationAlign::Map)
+        {
+            fwd      = Offset{ 0, 1 };   // fixed axes, never rotates
+            rightNum = Offset{ 1, 0 };
+            rightDen = 1;
+        }
+
         auto place = [&](int alongForward, int alongRight)
         {
             out.push_back(Offset{
-                fwd.X * alongForward + rgt.X * alongRight,
-                fwd.Y * alongForward + rgt.Y * alongRight });
+                fwd.X * alongForward + (rightNum.X * alongRight) / rightDen,
+                fwd.Y * alongForward + (rightNum.Y * alongRight) / rightDen });
         };
 
         switch (kind)

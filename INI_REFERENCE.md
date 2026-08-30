@@ -506,3 +506,36 @@ It is also local-player-only and never serialized. `Fire_SW` runs on every
 client, so an unguarded version would re-arm your cursor whenever a *remote*
 player fired. The pending-superweapon index is UI state, never read by game
 logic, so per-client mutation is desync-safe.
+
+### Which way the formation faces
+
+```ini
+[SOMESW]
+SWExt.ParaDrop.Formation.Align=screen   ; screen | cell | map  (or yes / no)
+```
+
+| Value | Sideways spread is laid out… |
+|---|---|
+| `screen` *(default, alias `yes`)* | perpendicular to the flight path **on screen** — looks abreast from every edge |
+| `cell` | perpendicular in **cell** space — mathematically tidy, but looks skewed |
+| `map` *(alias `no`)* | never rotates; always along cell +X |
+
+**Why this isn't one setting.** RA2's isometric projection is not conformal — a
+right angle in cell space is *not* a right angle on screen. Projecting the two
+cell axes with the engine's own transform gives
+
+```
+cell +X  ->  screen (+2, +1)
+cell +Y  ->  screen (-2, +1)      dot = -3, i.e. ~127° apart, not 90°
+```
+
+So a line built perpendicular to the flight path *in cell space* appears swept
+back from some edges and swept forward from others — "a row in some directions,
+trailing behind each other in others". `screen` corrects for the projection so
+it reads the same from every approach.
+
+Only the **sideways** axis is corrected. `column` still trails straight back
+along the true flight vector, because the flight path itself already looks right.
+
+> If planes still appear to trail when you expect a row, check `Delays=` first —
+> a delayed plane launches later and will lag behind regardless of formation.
