@@ -857,6 +857,20 @@ DEFINE_HOOK(0x6CE8BE, SuperWeaponTypeClass_Load_Suffix, 0x7)
     return 0;
 }
 
+// Hooks the `ret 0xc` that ends SuperWeaponTypeClass::Save, so our static data
+// is written after the game has written its own.
+//
+// Size 3 is the true length of that `ret`. Syringe stamps 5 bytes regardless and
+// would resume at 0x6CE8EF, which is NOT where control goes: the stub copies the
+// 3-byte `ret`, and the `ret` executes and returns to the caller before the
+// stub's trailing jump is ever reached. The 2 bytes the patch spills past the
+// `ret` are compiler NOP padding (0x6CE8ED-0x6CE8EE) ahead of the next function
+// at 0x6CE8F0 -- alignment filler, not code or data.
+//
+// Contrast 0x4F8361, where the identical pattern spills into a live switch jump
+// table. The shape of the hook is the same; only the bytes behind it differ.
+//
+// syringe-hook-ok: stolen bytes are a `ret`; the 2 spilled bytes are NOP padding
 DEFINE_HOOK(0x6CE8EA, SuperWeaponTypeClass_Save_Suffix, 0x3)
 {
     SWTypeExt::ExtMap.SaveStatic();
