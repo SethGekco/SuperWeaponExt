@@ -118,6 +118,10 @@ Run in a live skirmish alongside Antares + Phobos + 13 other Syringe DLLs.
 | **Owner-scoped inhibitors** | **own** GAPOWR blocks, **enemy** GAPOWR does not |
 | Hotkey (fire + arm modes) | both behave as configured |
 | Instant-fire targeting | lands on the cursor cell |
+| Owned paradrop | formation flies in formation; `Origin=nearest` enters from the edge nearest the target |
+| Paradrop recharge | timer resets, and the superweapon is **not** spammable while charging |
+| Formation alignment | `Align=screen` reads as abreast from every approach edge |
+| Growth over match time | radius widens as configured |
 
 The owner-scoped result is the load-bearing one: Antares hardcodes inhibitors to
 **enemies only** (`src/Misc/SWTypes.cpp:243-260`), so an inhibitor that triggers
