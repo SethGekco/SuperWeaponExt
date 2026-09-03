@@ -56,6 +56,8 @@
  */
 #include "Body.h"
 
+#include <Ext/Techno/StandingOrders.h>
+
 #include <DisplayClass.h>
 #include <HouseClass.h>
 #include <SuperClass.h>
@@ -130,6 +132,15 @@ DEFINE_HOOK(0x4FAE50, HouseClass_Fire_SW_ConstraintVeto, 0x7)
     if (pExt->ParaDrop.Enabled && !pSuper->CanFire())
         return Continue;
 
+    // Record where this launch landed, for units whose standing order is
+    // "converge on the last superweapon impact".
+    //
+    // Placed AFTER the constraint veto and the readiness gate so a refused or
+    // not-yet-charged click does not move anybody, but BEFORE the owned-paradrop
+    // dispatch so both the owned path and the engine path record identically.
+    // Fire_SW runs on every client, so this write is synced by position.
+    SWExt::StandingOrders::RecordImpact(pThis, *pCoords);
+
     if (pExt->ParaDrop.Enabled
         && SWTypeExt::RunOwnedParaDrop(pSuper->Type, pThis, *pCoords))
     {
@@ -175,7 +186,12 @@ DEFINE_HOOK(0x4FAE50, HouseClass_Fire_SW_ConstraintVeto, 0x7)
     return Continue;
 }
 
-// TODO(standing orders, FINDINGS.md §3b): record the per-house "last SW impact
-// cell" here — this hook is the one place every launch is guaranteed to pass.
-// Deliberately NOT done yet: that blackboard is session state and must be
-// save/load serialized before it ships, or a mid-game save desyncs on reload.
+// STANDING ORDERS: the per-house "last SW impact cell" blackboard is written
+// from this hook, because it is the one place every launch is guaranteed to
+// pass. See src/Ext/Techno/StandingOrders.h.
+//
+// On the earlier save/load concern: the blackboard is NOT serialized, and that
+// turns out to be safe rather than merely unfinished. Every client reloads with
+// it empty, so all clients agree; SWImpact-mode units then read "no
+// destination" and are simply left alone until the next launch. The cost is a
+// behavioural gap across a reload, not a divergence.

@@ -19,6 +19,8 @@ jobs:
           ./ct
           g++ -std=c++20 -Wall -Wextra -Werror -Isrc tests/formation_test.cpp -o ft
           ./ft
+          g++ -std=c++20 -Wall -Wextra -Werror -Isrc tests/standingorder_test.cpp -o st
+          ./st
 
   build:
     runs-on: windows-latest

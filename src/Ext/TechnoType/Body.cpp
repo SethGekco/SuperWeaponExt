@@ -10,12 +10,108 @@
 
 #include <Utilities/Macro.h>
 
-#include <cstdio>   // _snprintf_s
+#include <TechnoTypeClass.h>
+#include <Utilities/Debug.h>
+
+#include <cstdio>    // _snprintf_s
+#include <cstring>   // _strcmpi
+#include <string>
+#include <vector>
 
 TechnoTypeExt::ExtContainer TechnoTypeExt::ExtMap;
 
 namespace
 {
+    // Split a comma list into trimmed, non-empty tokens.
+    std::vector<std::string> SplitList(const char* buffer)
+    {
+        std::vector<std::string> out;
+        std::string cur;
+        for (const char* p = buffer; p && *p; ++p)
+        {
+            if (*p == ',')
+            {
+                if (!cur.empty()) { out.push_back(cur); cur.clear(); }
+            }
+            else if (*p != ' ' && *p != '\t')
+            {
+                cur += *p;
+            }
+        }
+        if (!cur.empty()) out.push_back(cur);
+        return out;
+    }
+
+    void ReadStandingOrder(CCINIClass* pINI, const char* section,
+                           SWExt::StandingOrder& into)
+    {
+        char buf[2048] = {};
+
+        if (pINI->ReadString(section, "SWExt.StandingOrder", "", buf, sizeof(buf)) <= 0)
+            return;
+
+        using M = SWExt::StandingOrderMode;
+        if (!_strcmpi(buf, "none") || !_strcmpi(buf, "no"))       into.Mode = M::None;
+        else if (!_strcmpi(buf, "techno") || !_strcmpi(buf, "type")) into.Mode = M::Techno;
+        else if (!_strcmpi(buf, "swimpact") || !_strcmpi(buf, "impact")) into.Mode = M::SWImpact;
+        else
+        {
+            Debug::Log("[SuperWeaponExt] [%s] SWExt.StandingOrder='%s' is not "
+                       "recognised (none/techno/swimpact); ignoring\n", section, buf);
+            return;
+        }
+
+        if (pINI->ReadString(section, "SWExt.StandingOrder.Types", "", buf, sizeof(buf)) > 0)
+        {
+            for (auto const& tok : SplitList(buf))
+            {
+                if (auto const pType = TechnoTypeClass::Find(tok.c_str()))
+                    into.TypeIndices.push_back(pType->GetArrayIndex());
+                else
+                    Debug::Log("[SuperWeaponExt] [%s] SWExt.StandingOrder.Types: "
+                               "unknown TechnoType '%s'\n", section, tok.c_str());
+            }
+        }
+
+        if (pINI->ReadString(section, "SWExt.StandingOrder.AffectsHouse", "", buf, sizeof(buf)) > 0)
+        {
+            using R = SWExt::Relation;
+            if (!_strcmpi(buf, "owner") || !_strcmpi(buf, "self"))         into.Affects = R::Owner;
+            else if (!_strcmpi(buf, "allies") || !_strcmpi(buf, "ally"))   into.Affects = R::Allies;
+            else if (!_strcmpi(buf, "enemies") || !_strcmpi(buf, "enemy")) into.Affects = R::Enemies;
+            else if (!_strcmpi(buf, "team"))                               into.Affects = R::Team;
+            else if (!_strcmpi(buf, "notallies"))                          into.Affects = R::NotAllies;
+            else if (!_strcmpi(buf, "notowner"))                           into.Affects = R::NotOwner;
+            else if (!_strcmpi(buf, "all"))                                into.Affects = R::All;
+            else
+            {
+                Debug::Log("[SuperWeaponExt] [%s] SWExt.StandingOrder.AffectsHouse='%s' "
+                           "is not recognised; using enemies\n", section, buf);
+            }
+        }
+
+        into.Range    = pINI->ReadInteger(section, "SWExt.StandingOrder.Range", 0);
+        into.Interval = pINI->ReadInteger(section, "SWExt.StandingOrder.Interval", 45);
+        into.IdleOnly = pINI->ReadBool(section, "SWExt.StandingOrder.IdleOnly", true);
+
+        if (into.Interval < 1)
+            into.Interval = 1;
+
+        if (into.Active())
+        {
+            Debug::Log("[SuperWeaponExt] [%s] standing order: mode %d, %u type(s), "
+                       "range %d, every %d frames, idle-only %d\n",
+                       section, static_cast<int>(into.Mode),
+                       static_cast<unsigned>(into.TypeIndices.size()),
+                       into.Range, into.Interval, into.IdleOnly ? 1 : 0);
+        }
+        else
+        {
+            Debug::Log("[SuperWeaponExt] [%s] SWExt.StandingOrder is set but inert "
+                       "(techno mode needs SWExt.StandingOrder.Types)\n", section);
+        }
+    }
+
     // Read one veterancy-tiered range triplet: Key=, Key.Veteran=, Key.Elite=.
     // A missing key stays <0, which RangeSpec::Resolve reads as "inherit".
     void ReadRangeSpec(CCINIClass* pINI, const char* section, const char* key,
@@ -44,6 +140,8 @@ void TechnoTypeExt::ExtData::LoadFromINIFile(CCINIClass* pINI)
 
     // Leptons. 256 leptons = 1 cell; the engine default is 0x400 (4 cells).
     this->ParadropRadius = pINI->ReadInteger(section, "SWExt.ParadropRadius", -1);
+
+    ReadStandingOrder(pINI, section, this->Order);
 }
 
 // Type data is re-parsed from the rules INI on every load, so there is nothing

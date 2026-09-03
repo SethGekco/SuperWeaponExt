@@ -39,6 +39,8 @@
  */
 #include "Body.h"
 
+#include <Ext/Techno/StandingOrders.h>
+
 #include <Ext/TechnoType/Body.h>   // TechnoTypeExt — the ParadropRadius override
 
 #include <AircraftClass.h>
@@ -366,9 +368,15 @@ void SWTypeExt::TickPendingParaDrops()
 // Only an unmerged Phobos PR touches it, so it is uncontended in any release
 // build. Documented in the encyclopedia's Logic-Frame-Update page.
 // =============================================================================
-DEFINE_HOOK(0x55B6B3, LogicClass_AI_SWExtParaDropTick, 0x5)
+// ⚠ EVERY per-frame consumer in this DLL shares THIS handler. Do not add a
+// second DEFINE_HOOK nearby: a 5-byte hook here covers 0x55B6B3..0x55B6B7, so a
+// hook at e.g. 0x55B6B6 would OVERLAP rather than chain. Syringe chains
+// same-address hooks safely but overlapping ones corrupt each other's stubs into
+// a wild jump. Call your tick from here instead.
+DEFINE_HOOK(0x55B6B3, LogicClass_AI_SWExtFrameTick, 0x5)
 {
     SWTypeExt::TickPendingParaDrops();
+    SWExt::StandingOrders::Tick();
     return 0;
 }
 

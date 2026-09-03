@@ -539,3 +539,64 @@ along the true flight vector, because the flight path itself already looks right
 
 > If planes still appear to trail when you expect a row, check `Delays=` first —
 > a delayed plane launches later and will lag behind regardless of formation.
+
+---
+
+## Unit standing orders
+
+A persistent per-TechnoType rule: *"whenever you have nothing better to do, head
+toward X."* Set on a **TechnoType** (`[MTNK]`, `[E1]`, ...), not on a superweapon.
+
+```ini
+[MTNK]
+SWExt.StandingOrder=techno            ; none (default) | techno | swimpact
+SWExt.StandingOrder.Types=GAPOWR,NAPOWR   ; techno mode: what to converge on
+SWExt.StandingOrder.AffectsHouse=enemies  ; owner|allies|enemies|team|notallies|notowner|all
+SWExt.StandingOrder.Range=0           ; cells to search; 0 = whole map
+SWExt.StandingOrder.Interval=45       ; frames between re-evaluations
+SWExt.StandingOrder.IdleOnly=yes      ; only redirect units with nothing to do
+```
+
+| Mode | Destination |
+|---|---|
+| `none` | nothing happens (the default — costs nothing) |
+| `techno` | the **nearest** live instance of any type in `.Types`, filtered by `.AffectsHouse` |
+| `swimpact` | the **last cell a superweapon landed on** for that unit's own house |
+
+`swimpact` needs no `.Types`. `techno` with no `.Types` is inert, not a wildcard —
+an empty list means "converge on nothing", never "converge on everything".
+
+### `IdleOnly`, and why it defaults to yes
+
+A unit counts as idle when it has neither a destination nor a target. With
+`IdleOnly=yes` a standing order therefore only ever fills dead time: any order
+the player or the AI gives wins, and keeps winning until it completes.
+
+`IdleOnly=no` re-issues the move every `Interval` frames regardless. That will
+fight the player for control of the unit — it is meant for units that are
+*supposed* to be single-minded (a berserk rush unit, a homing drone), not as a
+general setting.
+
+### `Interval` is a cost knob, not just a responsiveness knob
+
+Units are staggered across the interval **by array index**, so with
+`Interval=45` roughly 1/45th of the ordered units re-evaluate on any given
+frame rather than all of them at once. Lowering it makes units react sooner and
+raises the per-frame cost proportionally. `Interval=1` means every ordered unit
+re-evaluates every frame; do not use it on a common unit.
+
+### Multiplayer safety
+
+This is the only feature in this DLL that **issues orders** rather than refusing
+them, so it changes simulation state that every client must agree on. The
+decision is computed only from synced state (frame counter, object array, object
+coordinates), and ties between two equidistant targets resolve to the earliest
+array index rather than to whichever was found first. Both properties are
+covered by `tests/standingorder_test.cpp`.
+
+### Known gap: save/load
+
+The `swimpact` blackboard is not written into the savegame. After loading a save,
+`swimpact` units have no recorded cell and are simply left alone until the next
+superweapon fires. Every client loads it empty, so this cannot desync — it is a
+behavioural gap, not a correctness bug.

@@ -29,6 +29,7 @@
     <ClCompile Include="src\Ext\SWType\Hooks.ParaDrop.cpp" />
     <ClCompile Include="src\Commands\Commands.cpp" />
     <ClCompile Include="src\Ext\TechnoType\Body.cpp" />
+    <ClCompile Include="src\Ext\Techno\Hooks.StandingOrder.cpp" />
     <ClCompile Include="YRpp\StaticInits.cpp" />
     <!-- Phobos utility implementations -->
     <ClCompile Include="Phobos\src\Utilities\Debug.cpp" />
@@ -41,8 +42,10 @@
     <ClInclude Include="src\SuperWeaponExt.h" />
     <ClInclude Include="src\SW\Constraint.h" />
     <ClInclude Include="src\SW\Formation.h" />
+    <ClInclude Include="src\SW\StandingOrder.h" />
     <ClInclude Include="src\Ext\SWType\Body.h" />
     <ClInclude Include="src\Ext\TechnoType\Body.h" />
+    <ClInclude Include="src\Ext\Techno\StandingOrders.h" />
     <ClInclude Include="src\Commands\FireNamedSW.h" />
   </ItemGroup>
 

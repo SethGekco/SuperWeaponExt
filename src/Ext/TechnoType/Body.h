@@ -11,6 +11,7 @@
  * which makes its check a no-op. See FINDINGS.md §0.
  */
 #include <SW/Constraint.h>
+#include <SW/StandingOrder.h>
 
 #include <TechnoTypeClass.h>
 #include <Utilities/Container.h>
@@ -40,11 +41,17 @@ public:
         // decide when to START dropping (see Ext/SWType/Hooks.ParaDrop.cpp).
         int ParadropRadius;
 
+        // Persistent "when idle, head toward X" rule. Costs nothing unless a
+        // modder configures it — Mode defaults to None and the tick skips every
+        // type whose order is inactive.
+        SWExt::StandingOrder Order;
+
         explicit ExtData(TechnoTypeClass* pOwner)
             : Extension<TechnoTypeClass>(pOwner)
             , InhibitorRange{}
             , DesignatorRange{}
             , ParadropRadius(-1)
+            , Order{}
         { }
 
         virtual ~ExtData() = default;
