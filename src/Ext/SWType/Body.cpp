@@ -576,6 +576,22 @@ bool SWTypeExt::ExtData::AllowsFireAt(HouseClass* pFirer, const CellStruct& cell
 
 void SWTypeExt::ExtData::LogDenial(HouseClass* pFirer, const CellStruct& cell) const
 {
+    // Layer 2 fires once per refused click, so it always prints. Seeding the
+    // signature with a value LogDenialSig never produces defeats the throttle.
+    int always = 0x7FFFFFFF;
+    this->LogDenialSig(pFirer, cell, always);
+}
+
+// Explain the refusal, printing only when the explanation is NEW.
+//
+// `sig` is in/out: pass the last signature seen and it is updated to the current
+// one. Nothing is printed when the signature is unchanged, which is what lets a
+// caller on the cursor path (every mouse move) stay quiet until the answer
+// actually moves — e.g. until a tank parks next to the power plant and the
+// radius jumps.
+void SWTypeExt::ExtData::LogDenialSig(HouseClass* pFirer, const CellStruct& cell,
+                                      int& sig) const
+{
     if (!pFirer || !this->Inhibitors.Active())
         return;
 
@@ -595,6 +611,16 @@ void SWTypeExt::ExtData::LogDenial(HouseClass* pFirer, const CellStruct& cell) c
         const int growth    = this->Inhibitors.Growth.DeltaAt(ctx.Frames);
         const int count     = SWExt::CountRatioFor(this->Inhibitors, src, ctx);
         const int final_    = SWExt::EffectiveRange(this->Inhibitors, src, ctx);
+
+        // Cheap change-detector, not a hash with any security meaning. Computed
+        // BEFORE printing so an unchanged explanation prints nothing at all.
+        const int newSig =
+            (final_ * 1000003) ^ (count * 31) ^ (src.CellX * 7) ^ src.CellY;
+
+        if (newSig == sig)
+            return;   // same answer as last time; say nothing
+
+        sig = newSig;
 
         auto const pType = TechnoTypeClass::Array.GetItemOrDefault(src.TypeIndex);
 
@@ -620,6 +646,49 @@ void SWTypeExt::LogCursorDenial(SuperWeaponTypeClass* pType, const CellStruct& c
     Debug::Log("[SuperWeaponExt] %s refused at (%d,%d)\n",
                pType->ID, cell.X, cell.Y);
     pExt->LogDenial(pPlayer, cell);
+}
+
+// =============================================================================
+// Layer 3's refusal log.
+//
+// ⚠ WHY THIS EXISTS, having already written LogCursorDenial for Layer 2.
+//
+// Layer 2 (the click veto at 0x4AC21C) logs one line per refused click. But once
+// Layer 3 has refused the CURSOR, the click never resolves a superweapon at all,
+// so Layer 2's hook reads a null pSWType and returns before reaching its log.
+// The net effect: a player-facing refusal — the thing actually observable in
+// game — produced ZERO log lines across three sessions, while the feature was
+// demonstrably working. The diagnostic was on a path those refusals never take.
+//
+// This is the same mistake twice: the first version logged from the LAUNCH path,
+// which Layer 2 pre-empts; the fix moved it to Layer 2, which Layer 3 pre-empts.
+// The rule that actually generalises: put the diagnostic on the layer that
+// PRODUCES THE BEHAVIOUR, not on the one that conceptually owns the decision.
+//
+// Throttled two ways, because GetAction runs on every mouse move:
+//   1. at most once every 15 frames (~1s), bounding the cost of re-gathering;
+//   2. then only when the EXPLANATION changes — so parking a tank next to the
+//      power plant prints exactly one new line showing the new radius.
+// =============================================================================
+void SWTypeExt::LogCursorRefusal(SuperWeaponTypeClass* pType, const CellStruct& cell)
+{
+    if (!pType)
+        return;
+
+    auto const pExt = SWTypeExt::ExtMap.Find(pType);
+    auto const pPlayer = HouseClass::CurrentPlayer;
+    if (!pExt || !pPlayer)
+        return;
+
+    static int s_lastFrame = -1000;
+    static int s_lastSig   = 0;
+
+    const int frame = Unsorted::CurrentFrame;
+    if (frame - s_lastFrame < 15 && frame >= s_lastFrame)
+        return;
+    s_lastFrame = frame;
+
+    pExt->LogDenialSig(pPlayer, cell, s_lastSig);
 }
 
 bool SWTypeExt::AllowsCursorAt(SuperWeaponTypeClass* pType, const CellStruct& cell)

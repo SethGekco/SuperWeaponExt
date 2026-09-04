@@ -174,6 +174,12 @@ public:
         // lines were logged across every test session because of that.
         void LogDenial(HouseClass* pFirer, const CellStruct& cell) const;
 
+        // As LogDenial, but prints only when the explanation changes. `sig` is
+        // in/out: the caller keeps it between calls. Used by the cursor layer,
+        // which is evaluated on every mouse move.
+        void LogDenialSig(HouseClass* pFirer, const CellStruct& cell,
+                          int& sig) const;
+
         // Reduce the live techno array to the evaluator's plain-data view.
         void GatherSources(HouseClass* pFirer,
                            std::vector<SWExt::Source>& sources,
@@ -207,6 +213,12 @@ public:
     // Layer 2 stops the click before an event is ever queued, so Fire_SW is
     // never reached and a launch-side log would stay silent forever.
     static void LogCursorDenial(SuperWeaponTypeClass* pType, const CellStruct& cell);
+
+    // Layer 3's refusal log. Separate from LogCursorDenial because Layer 3 runs
+    // on EVERY mouse move, so it is throttled; Layer 2 fires once per click and
+    // is not. See the comment on the definition for why this layer needed its
+    // own logger at all.
+    static void LogCursorRefusal(SuperWeaponTypeClass* pType, const CellStruct& cell);
 
     // --- dedicated per-superweapon hotkeys (src/Commands/FireNamedSW.h) ---
 

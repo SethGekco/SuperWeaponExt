@@ -133,6 +133,12 @@ namespace
         if (SWTypeExt::AllowsCursorAt(pThis, *pCell))
             return action;
 
+        // Explain the refusal HERE. This is the layer the player actually feels:
+        // once the cursor says no, the click never resolves a superweapon, so
+        // Layer 2's logger never runs. Throttled internally — see
+        // SWTypeExt::LogCursorRefusal.
+        SWTypeExt::LogCursorRefusal(pThis, *pCell);
+
         // Deny in the caller's own vocabulary so each system's no-cursor is the
         // one that shows. This resolves the open question flagged in FINDINGS §6:
         // the right disallow code is not a guess, it is read off what the
