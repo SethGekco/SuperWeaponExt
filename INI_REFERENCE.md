@@ -600,3 +600,27 @@ The `swimpact` blackboard is not written into the savegame. After loading a save
 `swimpact` units have no recorded cell and are simply left alone until the next
 superweapon fires. Every client loads it empty, so this cannot desync — it is a
 behavioural gap, not a correctness bug.
+
+### Drop radius, per superweapon
+
+`SWExt.ParadropRadius=` on an **AircraftType** sets how close a plane must get to
+its target before it starts dropping. That is per plane type, so two
+superweapons sharing `PDPLANE` could not differ. `SWExt.ParaDrop.Radius=` sets it
+on the **superweapon** instead:
+
+```ini
+[SWExtParaDropTest]
+SWExt.ParaDrop=yes
+SWExt.ParaDrop.Radius=2048     ; leptons; 256 = 1 cell, so 8 cells
+```
+
+Resolution order, most specific first:
+
+1. `SWExt.ParaDrop.Radius` on the superweapon that launched the plane
+2. `SWExt.ParadropRadius` on the aircraft type
+3. `[General]ParadropRadius` — the engine's single global
+
+> **Only owned drops.** A per-superweapon radius requires knowing which
+> superweapon launched a given plane, which is recorded at launch — so it applies
+> only where `SWExt.ParaDrop=yes`. A paradrop run by Antares never passes through
+> our launch path, so it resolves at the aircraft-type level, exactly as before.

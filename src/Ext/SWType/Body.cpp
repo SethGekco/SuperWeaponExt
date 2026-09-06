@@ -327,6 +327,10 @@ void SWTypeExt::ExtData::LoadFromINIFile(CCINIClass* pINI)
             this->ParaDrop.Nums.resize(this->ParaDrop.Types.size(), 1);
         }
 
+        // Leptons (256 = 1 cell). Overrides the AircraftType's own
+        // SWExt.ParadropRadius for planes THIS superweapon launches.
+        this->ParaDrop.Radius  = pINI->ReadInteger(section, "SWExt.ParaDrop.Radius", -1);
+
         this->ParaDrop.Planes  = pINI->ReadInteger(section, "SWExt.ParaDrop.Planes", 1);
         this->ParaDrop.Spacing = pINI->ReadInteger(section, "SWExt.ParaDrop.Spacing", 4);
 

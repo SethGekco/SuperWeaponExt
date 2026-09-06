@@ -69,6 +69,7 @@ namespace
         CellStruct         Target      {};
         CellStruct         Spawn       {};
         Edge               Entry       = Edge::North;
+        int                Radius      = -1;   // per-SW drop radius, leptons
         std::vector<TechnoTypeClass*> Types;
         std::vector<int>              Nums;
     };
@@ -139,10 +140,88 @@ namespace
     // Build and launch ONE plane carrying `types`/`nums`, aimed at `target`.
     // Deliberately mirrors Antares' SendPDPlane so behaviour matches except for
     // the parts we are changing (entry edge, target cell).
+    // -------------------------------------------------------------------------
+    // Per-superweapon drop radius: which SW launched this plane?
+    //
+    // The engine's drop test only has the AIRCRAFT, so a per-superweapon radius
+    // needs the plane->SW association recorded at launch. We own the launch, so
+    // we can record it; Antares-launched drops are simply absent from this table
+    // and fall through to the per-aircraft-type key.
+    //
+    // ⚠ RAW POINTERS AS KEYS. This is the shape that caused an unbounded leak
+    // and stale-pointer reuse in AggressiveStance, so three rules apply:
+    //   1. the read path uses a linear FIND and never a default-inserting
+    //      operator[] -- a lookup must never grow the table;
+    //   2. entries are swept every frame from the tick we already own, so a dead
+    //      plane cannot linger;
+    //   3. the recorded TYPE is verified on read, so if an address is recycled
+    //      into a different object the entry is ignored rather than believed.
+    // Worst case after all three is a wrong drop distance for one frame, never a
+    // crash. The table is also tiny -- one entry per plane in flight.
+    // -------------------------------------------------------------------------
+    struct PlaneRadius
+    {
+        AircraftClass*     Plane;
+        AircraftTypeClass* Type;    // guards against address reuse
+        int                Radius;  // leptons
+    };
+
+    std::vector<PlaneRadius> g_planeRadius;
+
+    void RememberPlaneRadius(AircraftClass* pPlane, int radius)
+    {
+        if (!pPlane || radius < 0)
+            return;
+
+        for (auto& e : g_planeRadius)
+        {
+            if (e.Plane == pPlane)
+            {
+                e.Type   = pPlane->Type;
+                e.Radius = radius;
+                return;
+            }
+        }
+
+        g_planeRadius.push_back(PlaneRadius{ pPlane, pPlane->Type, radius });
+    }
+
+    // <0 = this plane has no per-SW radius.
+    int RecalledPlaneRadius(AircraftClass* pPlane)
+    {
+        if (!pPlane)
+            return -1;
+
+        for (auto const& e : g_planeRadius)
+        {
+            if (e.Plane == pPlane && e.Type == pPlane->Type)
+                return e.Radius;
+        }
+        return -1;
+    }
+
+    void SweepPlaneRadius()
+    {
+        for (std::size_t i = 0; i < g_planeRadius.size(); )
+        {
+            AircraftClass* const p = g_planeRadius[i].Plane;
+            if (!p || !p->IsAlive || p->InLimbo)
+            {
+                g_planeRadius[i] = g_planeRadius.back();
+                g_planeRadius.pop_back();
+            }
+            else
+            {
+                ++i;
+            }
+        }
+    }
+
     bool LaunchPlane(HouseClass* pOwner, AircraftTypeClass* pPlaneType,
                      const CellStruct& target, Edge entry,
                      const std::vector<TechnoTypeClass*>& types,
                      const std::vector<int>& nums,
+                     int swRadius,
                      const CellStruct* pSpawnOverride = nullptr)
     {
         if (!pOwner || !pPlaneType || types.empty() || types.size() != nums.size())
@@ -185,6 +264,10 @@ namespace
             GameDelete(pPlane);
             return false;
         }
+
+        // Only meaningful once the plane exists; skipped entirely when the
+        // superweapon sets no radius of its own.
+        RememberPlaneRadius(pPlane, swRadius);
 
         for (std::size_t i = 0; i < types.size(); ++i)
         {
@@ -293,6 +376,7 @@ bool SWTypeExt::RunOwnedParaDrop(SuperWeaponTypeClass* pType, HouseClass* pFirer
             p.Target      = target;
             p.Entry       = entry;
             p.Spawn       = spawn;
+            p.Radius      = cfg.Radius;
             p.Types       = cfg.Types;
             p.Nums        = cfg.Nums;
             g_pending.push_back(std::move(p));
@@ -300,13 +384,14 @@ bool SWTypeExt::RunOwnedParaDrop(SuperWeaponTypeClass* pType, HouseClass* pFirer
             continue;
         }
 
-        if (LaunchPlane(pFirer, cfg.Aircraft, target, entry, cfg.Types, cfg.Nums, &spawn))
+        if (LaunchPlane(pFirer, cfg.Aircraft, target, entry, cfg.Types, cfg.Nums,
+                        cfg.Radius, &spawn))
             ++launched;
     }
 
     Debug::Log("[SuperWeaponExt] [%s] paradrop at (%d,%d): edge %d, %d plane(s) "
-               "away, %d queued\n", pType->ID, cell.X, cell.Y,
-               static_cast<int>(entry), launched, queued);
+               "away, %d queued, radius %d\n", pType->ID, cell.X, cell.Y,
+               static_cast<int>(entry), launched, queued, cfg.Radius);
 
     // Handled even if some planes failed to spawn — the alternative is letting
     // Antares fire a second, unconfigured drop on top of ours.
@@ -357,7 +442,8 @@ void SWTypeExt::TickPendingParaDrops()
 
         // The owner may have been defeated between queueing and launching.
         if (p.Owner && !p.Owner->Defeated)
-            LaunchPlane(p.Owner, p.Aircraft, p.Target, p.Entry, p.Types, p.Nums, &p.Spawn);
+            LaunchPlane(p.Owner, p.Aircraft, p.Target, p.Entry, p.Types, p.Nums,
+                        p.Radius, &p.Spawn);
     }
 }
 
@@ -377,6 +463,7 @@ DEFINE_HOOK(0x55B6B3, LogicClass_AI_SWExtFrameTick, 0x5)
 {
     SWTypeExt::TickPendingParaDrops();
     SWExt::StandingOrders::Tick();
+    SweepPlaneRadius();
     return 0;
 }
 
@@ -400,10 +487,15 @@ DEFINE_HOOK(0x55B6B3, LogicClass_AI_SWExtFrameTick, 0x5)
 // bytes are only the `cmp`, so returning 0 would re-run it against the unchanged
 // rules value and ignore our override entirely.
 //
-// Scope note: this is per AIRCRAFT TYPE, not per superweapon, because the hook
-// only has the plane. Give two superweapons different plane types to give them
-// different drop radii. Per-SW would need per-instance state keyed on the
-// aircraft, which is not worth a lifetime-tracking map yet.
+// Scope: the hook only has the PLANE, so a per-superweapon radius needs the
+// plane->SW association recorded at launch. It now is — see the plane registry
+// above RememberPlaneRadius. Resolution order is SW, then aircraft type, then
+// the [General] global, so the per-aircraft-type key still works unchanged and
+// two superweapons sharing one plane type can differ.
+//
+// Only OWNED drops (SWExt.ParaDrop=yes) can carry a per-SW radius, because only
+// those pass through our LaunchPlane. An Antares-run paradrop is absent from the
+// registry and resolves at the aircraft-type level, which is the old behaviour.
 // =============================================================================
 namespace
 {
@@ -418,12 +510,20 @@ namespace
     }
 
     // Shared decision for both test sites.
+    //
+    // Precedence, most specific first:
+    //   1. SWExt.ParaDrop.Radius on the SUPERWEAPON that launched this plane
+    //   2. SWExt.ParadropRadius on the AIRCRAFT TYPE
+    //   3. [General]ParadropRadius, the engine's single global
     bool ShouldDropNow(AircraftClass* pPlane, int distance)
     {
-        const int overridden = OverriddenParadropRadius(pPlane);
-        const int radius = overridden >= 0
-            ? overridden
-            : RulesClass::Instance->ParadropRadius;
+        int radius = RecalledPlaneRadius(pPlane);
+
+        if (radius < 0)
+            radius = OverriddenParadropRadius(pPlane);
+
+        if (radius < 0)
+            radius = RulesClass::Instance->ParadropRadius;
 
         return distance <= radius;
     }

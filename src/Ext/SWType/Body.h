@@ -54,6 +54,14 @@ struct ParaDropConfig
     std::vector<int> Delays;
 
     ParaDropOrigin Origin = ParaDropOrigin::Owner;
+
+    // How close a plane must be to its target before it starts dropping, in
+    // LEPTONS (256 = 1 cell). <0 = not set, fall back to the aircraft type's
+    // SWExt.ParadropRadius and then to [General]ParadropRadius.
+    //
+    // Per-SUPERWEAPON, which the per-aircraft-type key cannot express: two
+    // superweapons sharing one plane type can now drop at different distances.
+    int Radius = -1;
 };
 
 // Number of dedicated per-superweapon hotkey slots (src/Commands/FireNamedSW.h).
