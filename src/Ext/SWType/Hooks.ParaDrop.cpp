@@ -164,6 +164,7 @@ namespace
         AircraftClass*     Plane;
         AircraftTypeClass* Type;    // guards against address reuse
         int                Radius;  // leptons
+        bool               Logged;  // diagnostic only, one line per plane
     };
 
     std::vector<PlaneRadius> g_planeRadius;
@@ -183,7 +184,7 @@ namespace
             }
         }
 
-        g_planeRadius.push_back(PlaneRadius{ pPlane, pPlane->Type, radius });
+        g_planeRadius.push_back(PlaneRadius{ pPlane, pPlane->Type, radius, false });
     }
 
     // <0 = this plane has no per-SW radius.
@@ -517,15 +518,44 @@ namespace
     //   3. [General]ParadropRadius, the engine's single global
     bool ShouldDropNow(AircraftClass* pPlane, int distance)
     {
+        const char* source = "SW";
         int radius = RecalledPlaneRadius(pPlane);
 
         if (radius < 0)
+        {
+            source = "aircraft type";
             radius = OverriddenParadropRadius(pPlane);
+        }
 
         if (radius < 0)
+        {
+            source = "[General]";
             radius = RulesClass::Instance->ParadropRadius;
+        }
 
-        return distance <= radius;
+        const bool drop = distance <= radius;
+
+        // One line per plane, the first time it actually starts dropping. Says
+        // WHICH level of the precedence chain won, because the configured value
+        // alone cannot show that — the whole point of the per-SW key is that it
+        // beats a different per-aircraft-type value, and only the resolved
+        // number proves it did.
+        if (drop)
+        {
+            for (auto& e : g_planeRadius)
+            {
+                if (e.Plane == pPlane && e.Type == pPlane->Type && !e.Logged)
+                {
+                    e.Logged = true;
+                    Debug::Log("[SuperWeaponExt] plane starts dropping at %d "
+                               "leptons (%d cells), radius from %s\n",
+                               radius, radius / 256, source);
+                    break;
+                }
+            }
+        }
+
+        return drop;
     }
 }
 
