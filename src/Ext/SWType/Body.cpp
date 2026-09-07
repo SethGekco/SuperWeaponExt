@@ -171,16 +171,17 @@ namespace
         ParseRelation(pINI, section, key, into.Affects);
 
         _snprintf_s(key, sizeof(key), "%s.AffectsPlayer", prefix);
-        if (pINI->ReadString(section, key, "", buf, sizeof(buf)) > 0)
+        char scope[64] = {};
+        if (pINI->ReadString(section, key, "", scope, sizeof(scope)) > 0)
         {
             using P = SWExt::PlayerScope;
-            if (!_strcmpi(buf, "human") || !_strcmpi(buf, "player"))        into.Scope = P::Human;
-            else if (!_strcmpi(buf, "computer") || !_strcmpi(buf, "ai"))    into.Scope = P::Computer;
-            else if (!_strcmpi(buf, "both") || !_strcmpi(buf, "all"))       into.Scope = P::Both;
+            if (!_strcmpi(scope, "human") || !_strcmpi(scope, "player"))     into.Scope = P::Human;
+            else if (!_strcmpi(scope, "computer") || !_strcmpi(scope, "ai")) into.Scope = P::Computer;
+            else if (!_strcmpi(scope, "both") || !_strcmpi(scope, "all"))    into.Scope = P::Both;
             else
             {
                 Debug::Log("[SuperWeaponExt] [%s] %s='%s' is not recognised "
-                           "(human/computer/both); using both\n", section, key, buf);
+                           "(human/computer/both); using both\n", section, key, scope);
             }
         }
 
