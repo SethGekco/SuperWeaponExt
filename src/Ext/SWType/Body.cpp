@@ -124,7 +124,7 @@ namespace
         for (auto const& tok : ReadList(pINI, section, key))
         {
             if (auto const pType = TechnoTypeClass::Find(tok.c_str()))
-                into.TypeIndices.push_back(pType->GetArrayIndex());
+                into.TypeIndices.push_back(TechnoTypeExt::UnifiedIndex(pType));
             else
                 Debug::Log("[SuperWeaponExt] [%s]%s: unknown TechnoType '%s'\n",
                            section, key, tok.c_str());
@@ -178,7 +178,7 @@ namespace
         for (auto const& tok : ReadList(pINI, section, key))
         {
             if (auto const pType = TechnoTypeClass::Find(tok.c_str()))
-                into.Ratio.TypeIndices.push_back(pType->GetArrayIndex());
+                into.Ratio.TypeIndices.push_back(TechnoTypeExt::UnifiedIndex(pType));
             else
                 Debug::Log("[SuperWeaponExt] [%s]%s: unknown TechnoType '%s'\n",
                            section, key, tok.c_str());
@@ -489,7 +489,7 @@ void SWTypeExt::ExtData::GatherSources(HouseClass* pFirer,
         if (!pType)
             continue;
 
-        const int typeIndex = pType->GetArrayIndex();
+        const int typeIndex = TechnoTypeExt::UnifiedIndex(pType);
 
         const bool isSource = this->Inhibitors.CoversType(typeIndex)
                            || this->Designators.CoversType(typeIndex);

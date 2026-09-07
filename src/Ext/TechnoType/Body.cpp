@@ -20,6 +20,23 @@
 
 TechnoTypeExt::ExtContainer TechnoTypeExt::ExtMap;
 
+int TechnoTypeExt::UnifiedIndex(TechnoTypeClass* pType)
+{
+    if (!pType)
+        return -1;
+
+    auto const pExt = TechnoTypeExt::ExtMap.Find(pType);
+    if (pExt && pExt->CachedUnifiedIndex >= 0)
+        return pExt->CachedUnifiedIndex;
+
+    const int idx = TechnoTypeClass::Array.FindItemIndex(pType);
+
+    if (pExt)
+        pExt->CachedUnifiedIndex = idx;
+
+    return idx;
+}
+
 namespace
 {
     // Split a comma list into trimmed, non-empty tokens.
@@ -66,7 +83,7 @@ namespace
             for (auto const& tok : SplitList(buf))
             {
                 if (auto const pType = TechnoTypeClass::Find(tok.c_str()))
-                    into.TypeIndices.push_back(pType->GetArrayIndex());
+                    into.TypeIndices.push_back(TechnoTypeExt::UnifiedIndex(pType));
                 else
                     Debug::Log("[SuperWeaponExt] [%s] SWExt.StandingOrder.Types: "
                                "unknown TechnoType '%s'\n", section, tok.c_str());

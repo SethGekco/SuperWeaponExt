@@ -46,6 +46,9 @@ public:
         // type whose order is inactive.
         SWExt::StandingOrder Order;
 
+        // Cache for UnifiedIndex(). <0 = not computed yet.
+        int CachedUnifiedIndex = -1;
+
         explicit ExtData(TechnoTypeClass* pOwner)
             : Extension<TechnoTypeClass>(pOwner)
             , InhibitorRange{}
@@ -74,6 +77,26 @@ public:
         ExtContainer();
         ~ExtContainer();
     };
+
+    // ⚠ COLLISION-FREE TYPE IDENTITY. Use this, NEVER GetArrayIndex(), whenever
+    // a TechnoType index is compared against another TechnoType index.
+    //
+    // GetArrayIndex() is PER-SUBCLASS: it returns the index within
+    // UnitTypeClass::Array / BuildingTypeClass::Array / InfantryTypeClass::Array
+    // / AircraftTypeClass::Array, which are four separate arrays. So indices
+    // COLLIDE across categories -- in a stock rules file APOC (vehicle 2) and
+    // GACNST (building 2) share an index, as do HTNK and GAPILE, and MTNK and
+    // NAPOWR. Phobos gives the game away by keeping four separate counter arrays
+    // for exactly this reason (Ext/House/Body.cpp AddToLimboTracking).
+    //
+    // This returns the index within the UNIFIED TechnoTypeClass::Array, which is
+    // unique across every techno type. Cached per type, because FindItemIndex is
+    // a linear scan and the runtime callers are per-object-per-frame.
+    //
+    // Found in game: an inhibitor ratio counting "tanks" was silently counting
+    // the player's Construction Yard and barracks, so the radius grew as the
+    // base was built and looked like a time-based effect.
+    static int UnifiedIndex(TechnoTypeClass* pType);
 
     static ExtContainer ExtMap;
 };

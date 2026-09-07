@@ -138,7 +138,7 @@ namespace
             const auto cell = CellClass::Coord2Cell(pTechno->GetCoords());
 
             out.push_back(Candidate{
-                pType->GetArrayIndex(),
+                TechnoTypeExt::UnifiedIndex(pType),
                 pTechno->Owner,
                 cell.X,
                 cell.Y });
