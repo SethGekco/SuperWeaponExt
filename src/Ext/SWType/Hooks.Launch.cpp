@@ -86,7 +86,8 @@ DEFINE_HOOK(0x4FAE50, HouseClass_Fire_SW_ConstraintVeto, 0x7)
     // is what keeps a mod that never touches SWExt.* tags at zero added cost.
     if (!pExt || (!pExt->IsConfigured()
                   && !pExt->ParaDrop.Enabled
-                  && !pExt->KeepSelectedAfterFire))
+                  && !pExt->KeepSelectedAfterFire
+                  && !pExt->Money.Active()))
     {
         return Continue;
     }
@@ -103,6 +104,42 @@ DEFINE_HOOK(0x4FAE50, HouseClass_Fire_SW_ConstraintVeto, 0x7)
 
         R->AL(0);
         return Deny;
+    }
+
+    // =========================================================================
+    // FINANCIAL REQUIREMENTS
+    //
+    // The AI fires superweapons without regard to its bank balance. Antares'
+    // Money.Amount does not help: it calls TransactMoney UNGUARDED at launch, so
+    // a costly superweapon fires anyway and can push the house negative. This
+    // gate is the missing affordability half, and it applies to the AI paths for
+    // free because they all funnel through Fire_SW.
+    //
+    // Desync-safe by position, not by care: house credits are synced simulation
+    // state and this hook is downstream of the event queue, so every client
+    // evaluates the same balance on the same frame.
+    //
+    // IsControlledByHuman(), NOT IsControlledByCurrentPlayer() — the latter
+    // answers "can the human at THIS machine drive it", which differs per client.
+    // =========================================================================
+    const bool firerIsHuman = pThis->IsControlledByHuman();
+
+    if (pExt->Money.Active())
+    {
+        const int money = pThis->Available_Money();
+
+        if (!pExt->Money.Allows(money, firerIsHuman))
+        {
+            const auto spec = pExt->Money.Resolve(firerIsHuman);
+            Debug::Log("[SuperWeaponExt] denied %s for house %d: credits %d fails "
+                       "cost %d / min %d / max %d (%s)\n",
+                       pSuper->Type->ID, pThis->ArrayIndex, money,
+                       spec.Cost, spec.Min, spec.Max,
+                       firerIsHuman ? "human" : "AI");
+
+            R->AL(0);
+            return Deny;
+        }
     }
 
     // OWNED PARADROP.
@@ -131,6 +168,32 @@ DEFINE_HOOK(0x4FAE50, HouseClass_Fire_SW_ConstraintVeto, 0x7)
     // swallowing the click.
     if (pExt->ParaDrop.Enabled && !pSuper->CanFire())
         return Continue;
+
+    // ⚠ CHARGE LAST, and only for a shot that is actually going off.
+    //
+    // The readiness gate above is deliberately re-tested here for NON-paradrop
+    // superweapons too. Without it a click on a recharging superweapon would be
+    // billed: this hook sits at Fire_SW's entry, upstream of every charge check
+    // the engine performs, so "not ready" is not visible to us until we ask.
+    // Both branches below end up returning Continue in that case, so adding the
+    // test changes nothing except who pays.
+    //
+    // Deducted here rather than in either branch so the owned-paradrop path and
+    // the engine path bill identically, exactly once.
+    if (pExt->Money.Active() && pSuper->CanFire())
+    {
+        const int cost = pExt->Money.CostFor(firerIsHuman);
+        if (cost != 0)
+        {
+            // Negative cost is income, which is why this is TransactMoney(-cost)
+            // rather than a subtraction guarded on cost > 0.
+            pThis->TransactMoney(-cost);
+
+            Debug::Log("[SuperWeaponExt] %s charged house %d %d credits "
+                       "(%d remaining)\n", pSuper->Type->ID, pThis->ArrayIndex,
+                       cost, pThis->Available_Money());
+        }
+    }
 
     // Record where this launch landed, for units whose standing order is
     // "converge on the last superweapon impact".

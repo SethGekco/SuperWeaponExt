@@ -7,6 +7,7 @@
  * off-target; this class is only the INI front-end and the container plumbing.
  */
 #include <SW/Constraint.h>
+#include <SW/Money.h>
 #include <SW/Formation.h>
 
 #include <GeneralStructures.h>   // CellStruct — SuperWeaponTypeClass.h does not pull it directly
@@ -96,6 +97,9 @@ public:
         int HotkeyIndex;
 
         ParaDropConfig ParaDrop;
+
+        // Financial requirements for firing. Inert unless configured.
+        SWExt::MoneyRule Money;
 
         // Leave the cursor holding this superweapon after it fires, instead of
         // deselecting. Lets a player re-fire a fast-recharging superweapon

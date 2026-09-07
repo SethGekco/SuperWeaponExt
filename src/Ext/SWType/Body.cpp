@@ -68,6 +68,50 @@ namespace
         return SplitList(buffer);
     }
 
+    // Read one controller's money thresholds. `suffix` is "" for the shared
+    // setting, ".Human" / ".AI" for the overrides.
+    //
+    // Min/Max default to -1 rather than 0 so that a configured ZERO stays
+    // meaningful: SWExt.RequiredMoney.Max=0 means "only while completely broke",
+    // which must not read as "no maximum".
+    void ReadMoneySpec(CCINIClass* pINI, const char* section, const char* suffix,
+                       SWExt::MoneySpec& into)
+    {
+        char key[128] = {};
+
+        _snprintf_s(key, sizeof(key), "SWExt.Cost%s", suffix);
+        into.Cost = pINI->ReadInteger(section, key, into.Cost);
+
+        // SWExt.RequiredMoney is an alias for the .Min form; read the plain key
+        // first so the explicit one wins when both are present.
+        _snprintf_s(key, sizeof(key), "SWExt.RequiredMoney%s", suffix);
+        into.Min = pINI->ReadInteger(section, key, into.Min);
+
+        _snprintf_s(key, sizeof(key), "SWExt.RequiredMoney.Min%s", suffix);
+        into.Min = pINI->ReadInteger(section, key, into.Min);
+
+        _snprintf_s(key, sizeof(key), "SWExt.RequiredMoney.Max%s", suffix);
+        into.Max = pINI->ReadInteger(section, key, into.Max);
+    }
+
+    void ReadMoneyRule(CCINIClass* pINI, const char* section, SWExt::MoneyRule& into)
+    {
+        ReadMoneySpec(pINI, section, "",       into.Both);
+        ReadMoneySpec(pINI, section, ".Human", into.Human);
+        ReadMoneySpec(pINI, section, ".AI",    into.AI);
+
+        if (!into.Active())
+            return;
+
+        const auto human = into.Resolve(true);
+        const auto ai    = into.Resolve(false);
+
+        Debug::Log("[SuperWeaponExt] [%s] money: human cost %d min %d max %d | "
+                   "AI cost %d min %d max %d\n", section,
+                   human.Cost, human.Min, human.Max,
+                   ai.Cost, ai.Min, ai.Max);
+    }
+
     // Resolve a comma list of COUNTRY names ([Americans], [Russians], ...) to
     // HouseTypeClass indices. Unknown names are reported and skipped rather than
     // silently dropped — a typo here would otherwise look like the filter simply
@@ -328,6 +372,8 @@ void SWTypeExt::ExtData::LoadFromINIFile(CCINIClass* pINI)
 
     // --- owned paradrop ---
     this->ParaDrop = ParaDropConfig{};
+    ReadMoneyRule(pINI, section, this->Money);
+
     this->ParaDrop.Enabled = pINI->ReadBool(section, "SWExt.ParaDrop", false);
 
     if (this->ParaDrop.Enabled)
@@ -750,13 +796,27 @@ bool SWTypeExt::AllowsCursorAt(SuperWeaponTypeClass* pType, const CellStruct& ce
 
     // Not ours to police, or no local player to evaluate against (observer,
     // loading screen) — say nothing and let the incumbent's verdict stand.
-    if (!pExt || !pExt->IsConfigured())
+    if (!pExt || (!pExt->IsConfigured() && !pExt->Money.Active()))
         return true;
 
     // DEFINE_REFERENCE(HouseClass*, CurrentPlayer, 0xA83D4C) — a reference to
     // the pointer, so no call parentheses.
     auto const pPlayer = HouseClass::CurrentPlayer;
     if (!pPlayer)
+        return true;
+
+    // Money is cell-independent, so it refuses the whole cursor rather than a
+    // particular target. Checked here as well as at launch so the player sees
+    // "you cannot afford this" as a refusing cursor instead of a click that
+    // silently does nothing.
+    if (pExt->Money.Active()
+        && !pExt->Money.Allows(pPlayer->Available_Money(),
+                               pPlayer->IsControlledByHuman()))
+    {
+        return false;
+    }
+
+    if (!pExt->IsConfigured())
         return true;
 
     return pExt->AllowsFireAt(pPlayer, cell);

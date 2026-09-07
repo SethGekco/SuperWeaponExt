@@ -43,6 +43,7 @@
     <ClInclude Include="src\SW\Constraint.h" />
     <ClInclude Include="src\SW\Formation.h" />
     <ClInclude Include="src\SW\StandingOrder.h" />
+    <ClInclude Include="src\SW\Money.h" />
     <ClInclude Include="src\Ext\SWType\Body.h" />
     <ClInclude Include="src\Ext\TechnoType\Body.h" />
     <ClInclude Include="src\Ext\Techno\StandingOrders.h" />

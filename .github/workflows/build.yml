@@ -21,6 +21,8 @@ jobs:
           ./ft
           g++ -std=c++20 -Wall -Wextra -Werror -Isrc tests/standingorder_test.cpp -o st
           ./st
+          g++ -std=c++20 -Wall -Wextra -Werror -Isrc tests/money_test.cpp -o mt
+          ./mt
 
   build:
     runs-on: windows-latest

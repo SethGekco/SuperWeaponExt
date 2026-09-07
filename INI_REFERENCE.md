@@ -658,3 +658,56 @@ resolved satisfies only an empty `RequiredHouses`.
 Names are country sections (`Americans`, `Russians`, ...). An unrecognised name
 is logged and skipped rather than silently ignored, since a typo would otherwise
 look exactly like the filter not working.
+
+---
+
+## Financial requirements
+
+The AI fires superweapons with no regard for its bank balance. Antares'
+`Money.Amount` does not help — it applies its transaction **unguarded** at
+launch, so a costly superweapon still fires and can push the house negative.
+These keys add the missing affordability half, and because every launch funnels
+through one place, the AI is governed by them for free.
+
+```ini
+[SOMESW]
+SWExt.Cost=2000                 ; credits DEDUCTED on fire; also an affordability floor
+SWExt.RequiredMoney=5000        ; credits the house must HAVE and keeps (alias of .Min)
+SWExt.RequiredMoney.Min=5000
+SWExt.RequiredMoney.Max=8000    ; credits the house must NOT exceed
+```
+
+Each key takes an optional `.Human` or `.AI` suffix, which overrides the shared
+value for that controller only:
+
+```ini
+SWExt.Cost=1000
+SWExt.Cost.AI=3000              ; the AI pays a premium
+SWExt.RequiredMoney.AI=10000    ; ...and waits until it is comfortable
+```
+
+| key | meaning |
+|---|---|
+| `Cost` | spent on fire. A house that cannot pay cannot fire. Negative = income. |
+| `RequiredMoney` / `.Min` | must have at least this, and **keeps** it |
+| `RequiredMoney.Max` | must have at most this |
+
+### Notes that matter
+
+**Overrides resolve per field, not per spec.** Setting only `SWExt.Cost.AI` does
+not discard a shared `SWExt.RequiredMoney.Min` — each field falls back to the
+general value independently.
+
+**`Max=0` means "only while completely broke".** Unset is `-1`, not `0`, so a
+configured zero stays meaningful. `Min` and `Max` together form a band:
+`Min=2000` with `Max=8000` is a superweapon usable only in the mid-game.
+
+**Cost and Min are different money.** `Cost` is spent; `Min` is kept. A house
+holding exactly `Cost` may fire when `Min` is unset.
+
+**Nothing is charged for a shot that does not go off.** The deduction happens
+last, after the readiness check, so clicking a recharging superweapon is free.
+A refused launch is never billed.
+
+**Teaching the AI restraint** is the main use: `SWExt.RequiredMoney.AI=` alone
+leaves human play untouched while stopping the AI from spending itself dry.
