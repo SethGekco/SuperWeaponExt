@@ -624,3 +624,37 @@ Resolution order, most specific first:
 > superweapon launched a given plane, which is recorded at launch — so it applies
 > only where `SWExt.ParaDrop=yes`. A paradrop run by Antares never passes through
 > our launch path, so it resolves at the aircraft-type level, exactly as before.
+
+---
+
+## Restricting a rule: by player type, and by country
+
+Both apply to `SWExt.Inhibitors` and `SWExt.Designators` alike, using the same
+`<role>.` prefix as the other sub-keys.
+
+```ini
+[SOMESW]
+SWExt.Inhibitors=GAPOWR
+SWExt.Inhibitors.AffectsPlayer=human       ; human | computer | both  (default both)
+SWExt.Inhibitors.RequiredHouses=Americans,British
+SWExt.Inhibitors.ForbiddenHouses=Russians
+```
+
+**`AffectsPlayer`** is judged on the **firing** house — "does this restriction
+apply to a human, to the AI, or to both". Use it to stop an inhibitor punishing
+the AI, which cannot read a cursor to understand why its shot was refused.
+
+> A rule that does not apply reads as **inactive**, not as "active but nothing
+> matched". That distinction matters for designators: an inactive designator lets
+> the shot through, whereas "active with nothing in range" blocks every shot. Both
+> behaviours are covered in `tests/constraint_test.cpp`.
+
+**`RequiredHouses` / `ForbiddenHouses`** filter the **source** — the building or
+unit doing the inhibiting/designating — by its owner's country. An empty
+`RequiredHouses` means any country. `ForbiddenHouses` always wins, so one list
+cannot resurrect what the other excluded. A source whose country cannot be
+resolved satisfies only an empty `RequiredHouses`.
+
+Names are country sections (`Americans`, `Russians`, ...). An unrecognised name
+is logged and skipped rather than silently ignored, since a typo would otherwise
+look exactly like the filter not working.

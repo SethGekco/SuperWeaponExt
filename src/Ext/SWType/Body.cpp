@@ -15,6 +15,7 @@
 #include <EventClass.h>
 #include <GeneralDefinitions.h>
 #include <HouseClass.h>
+#include <HouseTypeClass.h>   // FindIndexOfName, for the country filters
 #include <ObjectClass.h>
 #include <Surface.h>
 #include <SuperClass.h>
@@ -65,6 +66,24 @@ namespace
         if (pINI->ReadString(section, key, "", buffer, sizeof(buffer)) <= 0)
             return {};
         return SplitList(buffer);
+    }
+
+    // Resolve a comma list of COUNTRY names ([Americans], [Russians], ...) to
+    // HouseTypeClass indices. Unknown names are reported and skipped rather than
+    // silently dropped — a typo here would otherwise look like the filter simply
+    // not working.
+    void ReadCountryList(CCINIClass* pINI, const char* section, const char* key,
+                         std::vector<int>& into)
+    {
+        for (auto const& tok : ReadList(pINI, section, key))
+        {
+            const int idx = HouseTypeClass::FindIndexOfName(tok.c_str());
+            if (idx >= 0)
+                into.push_back(idx);
+            else
+                Debug::Log("[SuperWeaponExt] [%s] %s: unknown country '%s'\n",
+                           section, key, tok.c_str());
+        }
     }
 
     // Parse an AffectsHouse mask. Accepts a comma list so
@@ -150,6 +169,26 @@ namespace
         into.Affects = defaultRelation;
         _snprintf_s(key, sizeof(key), "%s.AffectsHouse", prefix);
         ParseRelation(pINI, section, key, into.Affects);
+
+        _snprintf_s(key, sizeof(key), "%s.AffectsPlayer", prefix);
+        if (pINI->ReadString(section, key, "", buf, sizeof(buf)) > 0)
+        {
+            using P = SWExt::PlayerScope;
+            if (!_strcmpi(buf, "human") || !_strcmpi(buf, "player"))        into.Scope = P::Human;
+            else if (!_strcmpi(buf, "computer") || !_strcmpi(buf, "ai"))    into.Scope = P::Computer;
+            else if (!_strcmpi(buf, "both") || !_strcmpi(buf, "all"))       into.Scope = P::Both;
+            else
+            {
+                Debug::Log("[SuperWeaponExt] [%s] %s='%s' is not recognised "
+                           "(human/computer/both); using both\n", section, key, buf);
+            }
+        }
+
+        _snprintf_s(key, sizeof(key), "%s.RequiredHouses", prefix);
+        ReadCountryList(pINI, section, key, into.RequiredCountries);
+
+        _snprintf_s(key, sizeof(key), "%s.ForbiddenHouses", prefix);
+        ReadCountryList(pINI, section, key, into.ForbiddenCountries);
 
         _snprintf_s(key, sizeof(key), "%s.RequirePower", prefix);
         into.RequirePower = pINI->ReadBool(section, key, defaultRequirePower);
@@ -468,6 +507,11 @@ void SWTypeExt::ExtData::GatherSources(HouseClass* pFirer,
     // time, or clients disagree about the radius and therefore the verdict.
     ctx.Frames = Unsorted::CurrentFrame;
 
+    // ⚠ IsControlledByHuman(), NOT IsControlledByCurrentPlayer(). The latter
+    // answers "can the human at THIS machine drive it", which differs per client
+    // and would desync a launch verdict. This one is a property of the house.
+    ctx.FirerIsHuman = pFirer->IsControlledByHuman();
+
     const bool wantRatio = this->Inhibitors.Ratio.Active()
                         || this->Designators.Ratio.Active();
     if (wantRatio)
@@ -539,6 +583,7 @@ void SWTypeExt::ExtData::GatherSources(HouseClass* pFirer,
         src.TypeIndex = typeIndex;
         src.Active    = true;
         src.Rel       = rel;
+        src.CountryIndex = (pOwner && pOwner->Type) ? pOwner->Type->ArrayIndex : -1;
         src.CellX     = center.X;
         src.CellY     = center.Y;
 

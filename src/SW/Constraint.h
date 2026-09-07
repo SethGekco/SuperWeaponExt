@@ -50,6 +50,10 @@ namespace SWExt
         return (static_cast<unsigned char>(mask) & static_cast<unsigned char>(value)) != 0;
     }
 
+    // Whether a rule applies to a human-controlled firer, an AI one, or both.
+    // "Control whether human or computer can use it" from the wishlist.
+    enum class PlayerScope : unsigned char { Both = 0, Human, Computer };
+
     enum class Rank : unsigned char { Rookie = 0, Veteran = 1, Elite = 2 };
 
     // Per-TechnoType range, veterancy-tiered. A tier of <0 means "inherit the
@@ -168,6 +172,10 @@ namespace SWExt
         bool     Active      = false;   // alive && health && !inLimbo && !deactivated
         bool     Powered     = true;    // buildings: IsPowerOnline(); others: true
         int      FallbackRange = 0;     // TechnoType range, already veterancy-resolved
+
+        // Owner's country index, for RequiredHouses / ForbiddenHouses. <0 = none,
+        // which passes a Required list only when that list is empty.
+        int      CountryIndex = -1;
     };
 
     // One role's rule (inhibitor or designator) as parsed from a [SOMESW] section.
@@ -186,6 +194,14 @@ namespace SWExt
         // top of a per-SW Ranges override. They always do.
         GrowthSpec Growth;
         RatioSpec  Ratio;
+
+        // Who the rule applies to, judged on the FIRING house.
+        PlayerScope Scope = PlayerScope::Both;
+
+        // Country whitelist / blacklist for the SOURCE's owner. Empty Required
+        // means "any country"; Forbidden always subtracts.
+        std::vector<int> RequiredCountries;
+        std::vector<int> ForbiddenCountries;
 
         // An empty type list with Any=false means the modder did not configure
         // this role at all, so it must not constrain anything.
@@ -213,6 +229,38 @@ namespace SWExt
                     return true;
             return false;
         }
+
+        // Does this rule apply at all, given who is firing?
+        //
+        // ⚠ Checked alongside Active() rather than inside IsEligible, and the
+        // distinction matters: a DESIGNATOR rule that does not apply must read as
+        // INACTIVE (so the shot passes), not as "active but nothing qualified"
+        // (which would block every shot).
+        bool AppliesTo(bool firerIsHuman) const
+        {
+            switch (this->Scope)
+            {
+            case PlayerScope::Human:    return firerIsHuman;
+            case PlayerScope::Computer: return !firerIsHuman;
+            default:                    return true;
+            }
+        }
+
+        bool AllowsCountry(int countryIndex) const
+        {
+            for (int idx : this->ForbiddenCountries)
+                if (idx == countryIndex)
+                    return false;
+
+            if (this->RequiredCountries.empty())
+                return true;
+
+            for (int idx : this->RequiredCountries)
+                if (idx == countryIndex)
+                    return true;
+
+            return false;
+        }
     };
 
     // Everything time- or world-dependent that the evaluator needs, gathered
@@ -225,6 +273,11 @@ namespace SWExt
     struct EvalContext
     {
         int Frames = 0;   // Unsorted::CurrentFrame — SYNCED. Never wall-clock.
+
+        // Is the FIRING house human-controlled? Drives Rule::Scope. Read from the
+        // firer, which is part of the launch/cursor input, not from the local
+        // player — so it is the same on every client.
+        bool FirerIsHuman = true;
         std::vector<RatioSource> RatioSources;
     };
 
@@ -310,9 +363,13 @@ namespace SWExt
             return false;
         if (rule.RequirePower && !src.Powered)
             return false;
+        if (!rule.AppliesTo(ctx.FirerIsHuman))
+            return false;
         if (!Matches(rule.Affects, src.Rel))
             return false;
         if (!rule.CoversType(src.TypeIndex))
+            return false;
+        if (!rule.AllowsCountry(src.CountryIndex))
             return false;
 
         const int range = EffectiveRange(rule, src, ctx);
@@ -336,7 +393,7 @@ namespace SWExt
                        const std::vector<Source>& sources, int cellX, int cellY,
                        const EvalContext& ctx = {})
     {
-        if (designators.Active())
+        if (designators.Active() && designators.AppliesTo(ctx.FirerIsHuman))
         {
             bool found = false;
             for (const auto& src : sources)
@@ -347,7 +404,7 @@ namespace SWExt
                 return false;
         }
 
-        if (inhibitors.Active())
+        if (inhibitors.Active() && inhibitors.AppliesTo(ctx.FirerIsHuman))
         {
             for (const auto& src : sources)
             {

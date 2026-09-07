@@ -535,6 +535,103 @@ static void Test_GrowthDeterminism()
     CHECK(big.DeltaAt(900 * 600) > 0, "a 10-hour match does not overflow to negative");
 }
 
+// -----------------------------------------------------------------------------
+static void Test_PlayerScope()
+{
+    std::printf("human / computer scope\n");
+
+    Source src;
+    src.TypeIndex = 7;
+    src.Rel       = Relation::Enemies;
+    src.Active    = true;
+    src.CellX     = 0;
+    src.CellY     = 0;
+    src.FallbackRange = 10;
+
+    Rule inhib;
+    inhib.TypeIndices = { 7 };
+    inhib.Affects     = Relation::Enemies;
+
+    EvalContext human;    human.FirerIsHuman    = true;
+    EvalContext computer; computer.FirerIsHuman = false;
+
+    // Default scope applies to everybody.
+    CHECK(!Allows(inhib, Rule{}, { src }, 0, 0, human),
+          "default scope blocks a human firer");
+    CHECK(!Allows(inhib, Rule{}, { src }, 0, 0, computer),
+          "default scope blocks an AI firer");
+
+    inhib.Scope = PlayerScope::Human;
+    CHECK(!Allows(inhib, Rule{}, { src }, 0, 0, human),
+          "Human-scoped inhibitor still blocks a human");
+    CHECK(Allows(inhib, Rule{}, { src }, 0, 0, computer),
+          "Human-scoped inhibitor ignores an AI firer");
+
+    inhib.Scope = PlayerScope::Computer;
+    CHECK(Allows(inhib, Rule{}, { src }, 0, 0, human),
+          "Computer-scoped inhibitor ignores a human firer");
+    CHECK(!Allows(inhib, Rule{}, { src }, 0, 0, computer),
+          "Computer-scoped inhibitor blocks an AI firer");
+
+    // ⚠ THE TRAP. A DESIGNATOR that does not apply must read as INACTIVE, so the
+    // shot passes. If scope were checked only per-source, the rule would look
+    // active with nothing qualifying, and block every shot instead.
+    Rule desig;
+    desig.TypeIndices = { 7 };
+    desig.Affects     = Relation::Enemies;
+    desig.Scope       = PlayerScope::Computer;
+
+    CHECK(Allows(Rule{}, desig, { src }, 0, 0, human),
+          "a designator that does not apply lets the shot through, not blocks it");
+    CHECK(Allows(Rule{}, desig, { src }, 0, 0, computer),
+          "a designator that DOES apply still passes with a source in range");
+    CHECK(!Allows(Rule{}, desig, {}, 0, 0, computer),
+          "an applying designator with no source in range still blocks");
+}
+
+// -----------------------------------------------------------------------------
+static void Test_CountryFilters()
+{
+    std::printf("required / forbidden houses\n");
+
+    Source src;
+    src.TypeIndex     = 7;
+    src.Rel           = Relation::Enemies;
+    src.Active        = true;
+    src.FallbackRange = 10;
+    src.CountryIndex  = 3;
+
+    Rule inhib;
+    inhib.TypeIndices = { 7 };
+    inhib.Affects     = Relation::Enemies;
+
+    CHECK(!Allows(inhib, Rule{}, { src }, 0, 0), "no country filter: blocks as usual");
+
+    inhib.RequiredCountries = { 3, 5 };
+    CHECK(!Allows(inhib, Rule{}, { src }, 0, 0), "source country on the Required list counts");
+
+    inhib.RequiredCountries = { 5 };
+    CHECK(Allows(inhib, Rule{}, { src }, 0, 0), "source country off the Required list is ignored");
+
+    inhib.RequiredCountries.clear();
+    inhib.ForbiddenCountries = { 3 };
+    CHECK(Allows(inhib, Rule{}, { src }, 0, 0), "Forbidden country is ignored");
+
+    // Forbidden beats Required, so one list cannot resurrect what the other cut.
+    inhib.RequiredCountries = { 3 };
+    CHECK(Allows(inhib, Rule{}, { src }, 0, 0), "Forbidden wins over Required");
+
+    // A source with no country passes only an empty Required list.
+    Source unknown = src;
+    unknown.CountryIndex = -1;
+    Rule needs;
+    needs.TypeIndices = { 7 };
+    needs.Affects     = Relation::Enemies;
+    needs.RequiredCountries = { 3 };
+    CHECK(Allows(needs, Rule{}, { unknown }, 0, 0),
+          "a source with no country cannot satisfy a Required list");
+}
+
 int main()
 {
     std::printf("SuperWeaponExt constraint core\n\n");
@@ -557,6 +654,9 @@ int main()
     Test_ModifiersCompose();
     Test_ModifiersInertWhenUnset();
     Test_GrowthDeterminism();
+
+    Test_PlayerScope();
+    Test_CountryFilters();
 
     std::printf("\n%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
