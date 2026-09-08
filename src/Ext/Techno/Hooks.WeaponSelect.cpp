@@ -53,6 +53,7 @@
 #include <Utilities/Macro.h>
 
 #include <algorithm>
+#include <utility>
 #include <vector>
 
 namespace
@@ -148,6 +149,25 @@ namespace
         return InSorted(wantInhibitor ? g_inhibitorTypes : g_designatorTypes, typeIndex);
     }
 
+    // One log line per (firer type, target type) pair, ever.
+    //
+    // Weapon selection runs from targeting, cursor rendering, threat evaluation
+    // and firing, so an unthrottled line would bury the log within seconds. But
+    // some diagnostic is needed: whether the override fired is NOT reliably
+    // visible in game, because the engine may pick a secondary weapon on its own
+    // for unrelated reasons, so "it looked different" proves nothing.
+    std::vector<std::pair<int, int>> g_logged;
+
+    bool ShouldLog(int firerIdx, int targetIdx)
+    {
+        for (auto const& e : g_logged)
+            if (e.first == firerIdx && e.second == targetIdx)
+                return false;
+
+        g_logged.emplace_back(firerIdx, targetIdx);
+        return true;
+    }
+
     using SelectWeaponFunc = int(__thiscall*)(TechnoClass*, AbstractClass*);
 
     int __stdcall TechnoClass_SelectWeapon_Wrapper(TechnoClass* pThis,
@@ -183,19 +203,26 @@ namespace
 
         // Inhibitor is tested first so that a type listed as BOTH resolves
         // predictably rather than by iteration order.
-        if (rule.VsInhibitor >= 0
-            && ActsAs(pTargetType, true, rule.InhibitorSW))
+        const bool vsInhib = rule.VsInhibitor >= 0
+                          && ActsAs(pTargetType, true, rule.InhibitorSW);
+        const bool vsDesig = !vsInhib
+                          && rule.VsDesignator >= 0
+                          && ActsAs(pTargetType, false, rule.DesignatorSW);
+
+        if (!vsInhib && !vsDesig)
+            return chosen;
+
+        const int override_ = vsInhib ? rule.VsInhibitor : rule.VsDesignator;
+
+        if (ShouldLog(TechnoTypeExt::UnifiedIndex(pType),
+                      TechnoTypeExt::UnifiedIndex(pTargetType)))
         {
-            return rule.VsInhibitor;
+            Debug::Log("[SuperWeaponExt] %s vs %s (%s): weapon %d -> %d\n",
+                       pType->ID, pTargetType->ID,
+                       vsInhib ? "inhibitor" : "designator", chosen, override_);
         }
 
-        if (rule.VsDesignator >= 0
-            && ActsAs(pTargetType, false, rule.DesignatorSW))
-        {
-            return rule.VsDesignator;
-        }
-
-        return chosen;
+        return override_;
     }
 }
 
