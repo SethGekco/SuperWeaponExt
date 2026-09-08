@@ -30,6 +30,7 @@
     <ClCompile Include="src\Commands\Commands.cpp" />
     <ClCompile Include="src\Ext\TechnoType\Body.cpp" />
     <ClCompile Include="src\Ext\Techno\Hooks.StandingOrder.cpp" />
+    <ClCompile Include="src\Ext\Techno\Hooks.WeaponSelect.cpp" />
     <ClCompile Include="YRpp\StaticInits.cpp" />
     <!-- Phobos utility implementations -->
     <ClCompile Include="Phobos\src\Utilities\Debug.cpp" />

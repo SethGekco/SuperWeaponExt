@@ -13,6 +13,8 @@
 #include <SW/Constraint.h>
 #include <SW/StandingOrder.h>
 
+class SuperWeaponTypeClass;
+
 #include <TechnoTypeClass.h>
 #include <Utilities/Container.h>
 #include <Utilities/TemplateDef.h>
@@ -45,6 +47,26 @@ public:
         // modder configures it — Mode defaults to None and the tick skips every
         // type whose order is inactive.
         SWExt::StandingOrder Order;
+
+        // "Use a different weapon against a designator/inhibitor."
+        // Weapon INDEX (0/1/...), <0 = not set. The optional scoped SW is the
+        // "honor indexes" case: restrict the test to one superweapon's list
+        // rather than the union across all of them.
+        struct WeaponVsSpec
+        {
+            int VsInhibitor  = -1;
+            int VsDesignator = -1;
+
+            SuperWeaponTypeClass* InhibitorSW  = nullptr;
+            SuperWeaponTypeClass* DesignatorSW = nullptr;
+
+            bool Active() const
+            {
+                return this->VsInhibitor >= 0 || this->VsDesignator >= 0;
+            }
+        };
+
+        WeaponVsSpec WeaponVs;
 
         // Cache for UnifiedIndex(). <0 = not computed yet.
         int CachedUnifiedIndex = -1;

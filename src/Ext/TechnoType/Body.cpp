@@ -10,6 +10,7 @@
 
 #include <Utilities/Macro.h>
 
+#include <SuperWeaponTypeClass.h>
 #include <TechnoTypeClass.h>
 #include <Utilities/Debug.h>
 
@@ -57,6 +58,40 @@ namespace
         }
         if (!cur.empty()) out.push_back(cur);
         return out;
+    }
+
+    // Weapon override when the TARGET is a designator/inhibitor.
+    void ReadWeaponVs(CCINIClass* pINI, const char* section,
+                      TechnoTypeExt::ExtData::WeaponVsSpec& into)
+    {
+        char buf[256] = {};
+
+        into.VsInhibitor  = pINI->ReadInteger(section, "SWExt.Weapon.VsInhibitor", -1);
+        into.VsDesignator = pINI->ReadInteger(section, "SWExt.Weapon.VsDesignator", -1);
+
+        if (pINI->ReadString(section, "SWExt.Weapon.VsInhibitor.SW", "", buf, sizeof(buf)) > 0)
+        {
+            into.InhibitorSW = SuperWeaponTypeClass::Find(buf);
+            if (!into.InhibitorSW)
+                Debug::Log("[SuperWeaponExt] [%s] SWExt.Weapon.VsInhibitor.SW: "
+                           "unknown superweapon '%s'; falling back to ANY\n", section, buf);
+        }
+
+        if (pINI->ReadString(section, "SWExt.Weapon.VsDesignator.SW", "", buf, sizeof(buf)) > 0)
+        {
+            into.DesignatorSW = SuperWeaponTypeClass::Find(buf);
+            if (!into.DesignatorSW)
+                Debug::Log("[SuperWeaponExt] [%s] SWExt.Weapon.VsDesignator.SW: "
+                           "unknown superweapon '%s'; falling back to ANY\n", section, buf);
+        }
+
+        if (into.Active())
+        {
+            Debug::Log("[SuperWeaponExt] [%s] weapon override: vs inhibitor %d%s, "
+                       "vs designator %d%s\n", section,
+                       into.VsInhibitor,  into.InhibitorSW  ? " (scoped)" : "",
+                       into.VsDesignator, into.DesignatorSW ? " (scoped)" : "");
+        }
     }
 
     void ReadStandingOrder(CCINIClass* pINI, const char* section,
@@ -159,6 +194,8 @@ void TechnoTypeExt::ExtData::LoadFromINIFile(CCINIClass* pINI)
     this->ParadropRadius = pINI->ReadInteger(section, "SWExt.ParadropRadius", -1);
 
     ReadStandingOrder(pINI, section, this->Order);
+
+    ReadWeaponVs(pINI, section, this->WeaponVs);
 }
 
 // Type data is re-parsed from the rules INI on every load, so there is nothing

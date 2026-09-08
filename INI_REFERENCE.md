@@ -711,3 +711,43 @@ A refused launch is never billed.
 
 **Teaching the AI restraint** is the main use: `SWExt.RequiredMoney.AI=` alone
 leaves human play untouched while stopping the AI from spending itself dry.
+
+---
+
+## A different weapon against designators and inhibitors
+
+Set on the **firing** TechnoType. When its target is configured as a designator
+or an inhibitor, it uses the given weapon index instead of the one the engine
+picked.
+
+```ini
+[MTNK]
+SWExt.Weapon.VsInhibitor=1        ; weapon index (0/1/...); unset = no override
+SWExt.Weapon.VsDesignator=1
+SWExt.Weapon.VsInhibitor.SW=SOMESW    ; optional: only that SW's inhibitor list
+SWExt.Weapon.VsDesignator.SW=SOMESW
+```
+
+Without the `.SW` suffix the test is the **union** across every superweapon: "is
+this target an inhibitor for anything". With it, the test is restricted to one
+superweapon's list — the "honor indexes" case, for when a building inhibits two
+superweapons and only one of them should change how it is shot at.
+
+If a type is listed as **both**, `VsInhibitor` wins. That is arbitrary but fixed,
+so it never depends on iteration order.
+
+### How this composes with Phobos and Antares
+
+The engine's weapon choice runs **first, in full**. Nine Phobos hooks and two
+Antares hooks live inside `WhatWeaponShouldIUse` — Interceptor, MultiWeapon,
+ForceFire, ForceWeapon, Gattling, Airstrike, IsLocomotor, AntiAir, NoAmmoWeapon,
+Verses — and every one of them still runs and decides. This override is applied
+to their answer afterwards.
+
+That is deliberate. Replacing the function (which Antares once tried and left
+commented out) would silently disable all of them.
+
+> The override is unconditional once it applies: it does not check that the
+> weapon index exists or that the weapon can actually hit the target. An index
+> pointing at a weapon with no `Projectile=` will misbehave exactly as it would
+> anywhere else.
