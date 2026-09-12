@@ -34,6 +34,12 @@
  * ⚠ The four slots are unclaimed: no Phobos or Antares source references them
  * and the hook registry has no rows for them. Verified before writing this.
  *
+ * They are also confirmed to be REAL vtable entries rather than raw bytes that
+ * happen to equal 0x6F3330: every neighbouring word at each of the four
+ * addresses is a valid .text pointer, and all four are followed by the same next
+ * virtual (0x6F3820). AircraftClass::AbsVTable is 0x7E22A4, and 0x7E2588 sits a
+ * whole number of slots past it.
+ *
  * ============================================================================
  * DETERMINISM
  * ============================================================================
@@ -168,16 +174,36 @@ namespace
         return true;
     }
 
-    using SelectWeaponFunc = int(__thiscall*)(TechnoClass*, AbstractClass*);
+    // ⚠ CALLING CONVENTION — this crashed the game once already.
+    //
+    // A vtable slot is invoked as __thiscall: `this` in ECX, arguments pushed on
+    // the stack, callee cleans. MSVC will not let you write __thiscall on a free
+    // function, so the standard model is __fastcall with a DUMMY second
+    // parameter to absorb EDX:
+    //
+    //     int __fastcall Wrapper(This* pThis, void* /*edx*/, Arg a)
+    //
+    // The first version of this file declared the wrapper __stdcall(pThis,
+    // pTarget). That reads `this` off the STACK — so pThis was really pTarget and
+    // pTarget was whatever lay past the frame — and, worse, a 2-parameter
+    // __stdcall callee pops 8 bytes while the caller pushed only 4. Four bytes of
+    // stack imbalance per call, and weapon selection is called constantly, so the
+    // return address was destroyed almost immediately. It surfaced as EIP landing
+    // inside .rdata (0x007FA9A0) right after a paradrop spawned planes.
+    //
+    // Hooks.Cursor.cpp had the correct pattern the whole time; this file cited it
+    // as the model and then failed to copy the signature.
+    using SelectWeaponFunc = int(__fastcall*)(TechnoClass*, void*, AbstractClass*);
 
-    int __stdcall TechnoClass_SelectWeapon_Wrapper(TechnoClass* pThis,
-                                                  AbstractClass* pTarget)
+    int __fastcall TechnoClass_SelectWeapon_Wrapper(TechnoClass* pThis,
+                                                    void* /* unused EDX */,
+                                                    AbstractClass* pTarget)
     {
         // Let the engine — and every framework hook inside it — decide first.
         // Our result is an override of a real answer, never a replacement for
         // running the function.
         const auto original = reinterpret_cast<SelectWeaponFunc>(0x6F3330);
-        const int chosen = original(pThis, pTarget);
+        const int chosen = original(pThis, nullptr, pTarget);
 
         if (!pThis || !pTarget)
             return chosen;
