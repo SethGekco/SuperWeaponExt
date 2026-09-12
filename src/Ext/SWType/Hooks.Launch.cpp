@@ -59,11 +59,69 @@
 #include <Ext/Techno/StandingOrders.h>
 
 #include <DisplayClass.h>
+#include <Fundamentals.h>   // Unsorted::CurrentFrame, for the denial-log throttle
 #include <HouseClass.h>
 #include <SuperClass.h>
 #include <SuperWeaponTypeClass.h>
 #include <Utilities/Debug.h>
 #include <Utilities/Macro.h>
+
+#include <vector>
+
+namespace
+{
+    // Denial-log throttle: one line per (house, superweapon) per ~30s.
+    //
+    // A broke AI retries a superweapon it cannot afford on almost every pass.
+    // Measured: 314 denials from one house in a few minutes of play, and that
+    // grows with match length. The information is worth keeping, the repetition
+    // is not — so suppressed attempts are COUNTED and reported on the next line
+    // rather than discarded, which keeps "how often is this happening" readable.
+    //
+    // Diagnostic only: it changes no verdict, and Debug::Log output is not part
+    // of simulation state, so throttling cannot affect lockstep.
+    constexpr int DenialLogInterval = 450;   // ~30s at 15fps
+
+    struct DenialRecord
+    {
+        int House;
+        int SW;
+        int LastFrame;
+        int Suppressed;
+    };
+
+    // Bounded in practice by houses x superweapons; both are small.
+    std::vector<DenialRecord> g_denialLog;
+
+    // Returns true if this denial should be printed. `suppressed` receives how
+    // many were swallowed since the last printed one.
+    bool ShouldLogDenial(int houseIdx, int swIdx, int frame, int& suppressed)
+    {
+        suppressed = 0;
+
+        for (auto& e : g_denialLog)
+        {
+            if (e.House != houseIdx || e.SW != swIdx)
+                continue;
+
+            // A new scenario restarts the frame counter; treat any backwards
+            // jump as a fresh match rather than suppressing for 30s of it.
+            if (frame < e.LastFrame || frame - e.LastFrame >= DenialLogInterval)
+            {
+                suppressed    = e.Suppressed;
+                e.Suppressed  = 0;
+                e.LastFrame   = frame;
+                return true;
+            }
+
+            ++e.Suppressed;
+            return false;
+        }
+
+        g_denialLog.push_back(DenialRecord{ houseIdx, swIdx, frame, 0 });
+        return true;
+    }
+}
 
 DEFINE_HOOK(0x4FAE50, HouseClass_Fire_SW_ConstraintVeto, 0x7)
 {
@@ -92,15 +150,25 @@ DEFINE_HOOK(0x4FAE50, HouseClass_Fire_SW_ConstraintVeto, 0x7)
         return Continue;
     }
 
+
     if (pExt->IsConfigured() && !pExt->AllowsFireAt(pThis, *pCoords))
     {
-        Debug::Log("[SuperWeaponExt] denied %s for house %d at (%d,%d): "
-                   "inhibitor/designator constraints not met\n",
-                   pSuper->Type->ID, pThis->ArrayIndex, pCoords->X, pCoords->Y);
+        int suppressed = 0;
+        if (ShouldLogDenial(pThis->ArrayIndex, idxSW, Unsorted::CurrentFrame, suppressed))
+        {
+            Debug::Log("[SuperWeaponExt] denied %s for house %d at (%d,%d): "
+                       "inhibitor/designator constraints not met",
+                       pSuper->Type->ID, pThis->ArrayIndex, pCoords->X, pCoords->Y);
 
-        // Explain WHICH inhibitor blocked and how its radius was arrived at.
-        // Only on a real refused launch, never the per-frame cursor path.
-        pExt->LogDenial(pThis, *pCoords);
+            if (suppressed)
+                Debug::Log(" (+%d attempt(s) since last line)", suppressed);
+
+            Debug::Log("\n");
+
+            // Explain WHICH inhibitor blocked and how its radius was arrived at.
+            // Only on a real refused launch, never the per-frame cursor path.
+            pExt->LogDenial(pThis, *pCoords);
+        }
 
         R->AL(0);
         return Deny;
@@ -130,12 +198,22 @@ DEFINE_HOOK(0x4FAE50, HouseClass_Fire_SW_ConstraintVeto, 0x7)
 
         if (!pExt->Money.Allows(money, firerIsHuman))
         {
-            const auto spec = pExt->Money.Resolve(firerIsHuman);
-            Debug::Log("[SuperWeaponExt] denied %s for house %d: credits %d fails "
-                       "cost %d / min %d / max %d (%s)\n",
-                       pSuper->Type->ID, pThis->ArrayIndex, money,
-                       spec.Cost, spec.Min, spec.Max,
-                       firerIsHuman ? "human" : "AI");
+            int suppressed = 0;
+            if (ShouldLogDenial(pThis->ArrayIndex, idxSW, Unsorted::CurrentFrame,
+                                suppressed))
+            {
+                const auto spec = pExt->Money.Resolve(firerIsHuman);
+                Debug::Log("[SuperWeaponExt] denied %s for house %d: credits %d "
+                           "fails cost %d / min %d / max %d (%s)",
+                           pSuper->Type->ID, pThis->ArrayIndex, money,
+                           spec.Cost, spec.Min, spec.Max,
+                           firerIsHuman ? "human" : "AI");
+
+                if (suppressed)
+                    Debug::Log(" (+%d attempt(s) since last line)", suppressed);
+
+                Debug::Log("\n");
+            }
 
             R->AL(0);
             return Deny;
