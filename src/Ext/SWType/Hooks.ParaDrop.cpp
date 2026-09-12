@@ -49,6 +49,7 @@
 #include <DisplayClass.h>
 #include <Fundamentals.h>   // Unsorted::CurrentFrame
 #include <HouseClass.h>
+#include <HouseTypeClass.h>   // Type->ID, to name the firing country in the log
 #include <MapClass.h>
 #include <RulesClass.h>   // RulesClass::Instance->ParadropRadius
 #include <TechnoTypeClass.h>
@@ -390,8 +391,15 @@ bool SWTypeExt::RunOwnedParaDrop(SuperWeaponTypeClass* pType, HouseClass* pFirer
             ++launched;
     }
 
-    Debug::Log("[SuperWeaponExt] [%s] paradrop at (%d,%d): edge %d, %d plane(s) "
-               "away, %d queued, radius %d\n", pType->ID, cell.X, cell.Y,
+    // The firing house is named because AI and human drops are otherwise
+    // indistinguishable in the log, which makes any AI-side rule unfalsifiable.
+    Debug::Log("[SuperWeaponExt] [%s] paradrop at (%d,%d) by house %d (%s, %s), "
+               "credits %d: edge %d, %d plane(s) away, %d queued, radius %d\n",
+               pType->ID, cell.X, cell.Y,
+               pFirer->ArrayIndex,
+               pFirer->Type ? pFirer->Type->ID : "?",
+               pFirer->IsControlledByHuman() ? "human" : "AI",
+               pFirer->Available_Money(),
                static_cast<int>(entry), launched, queued, cfg.Radius);
 
     // Handled even if some planes failed to spawn — the alternative is letting

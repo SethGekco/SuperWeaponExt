@@ -140,6 +140,19 @@ DEFINE_HOOK(0x4FAE50, HouseClass_Fire_SW_ConstraintVeto, 0x7)
             R->AL(0);
             return Deny;
         }
+
+        // Also log the PASS. Without it, "no denials" is ambiguous between "the
+        // gate held and nobody tripped it" and "the gate never ran" — which is
+        // exactly the question an AI-side rule raises, since an AI that is simply
+        // rich looks identical to one that is ungated.
+        Debug::Log("[SuperWeaponExt] %s allowed for house %d (%s, %s): credits %d "
+                   "passes cost %d / min %d / max %d\n",
+                   pSuper->Type->ID, pThis->ArrayIndex,
+                   pThis->Type ? pThis->Type->ID : "?",
+                   firerIsHuman ? "human" : "AI", money,
+                   pExt->Money.Resolve(firerIsHuman).Cost,
+                   pExt->Money.Resolve(firerIsHuman).Min,
+                   pExt->Money.Resolve(firerIsHuman).Max);
     }
 
     // OWNED PARADROP.
