@@ -66,6 +66,7 @@
 #include <Utilities/Debug.h>
 #include <Utilities/Macro.h>
 
+#include <cstdio>    // _snprintf_s
 #include <vector>
 
 namespace
@@ -156,14 +157,21 @@ DEFINE_HOOK(0x4FAE50, HouseClass_Fire_SW_ConstraintVeto, 0x7)
         int suppressed = 0;
         if (ShouldLogDenial(pThis->ArrayIndex, idxSW, Unsorted::CurrentFrame, suppressed))
         {
-            Debug::Log("[SuperWeaponExt] denied %s for house %d at (%d,%d): "
-                       "inhibitor/designator constraints not met",
-                       pSuper->Type->ID, pThis->ArrayIndex, pCoords->X, pCoords->Y);
-
+            // ⚠ ONE Debug::Log call per line. Debug::Log prepends "[Phobos] "
+            // to EVERY call, so splitting a line across calls injects the
+            // prefix mid-sentence — which is exactly what the first version of
+            // this throttle produced in game.
+            char suffix[64] = {};
             if (suppressed)
-                Debug::Log(" (+%d attempt(s) since last line)", suppressed);
+            {
+                _snprintf_s(suffix, sizeof(suffix),
+                            " (+%d attempt(s) since last line)", suppressed);
+            }
 
-            Debug::Log("\n");
+            Debug::Log("[SuperWeaponExt] denied %s for house %d at (%d,%d): "
+                       "inhibitor/designator constraints not met%s\n",
+                       pSuper->Type->ID, pThis->ArrayIndex,
+                       pCoords->X, pCoords->Y, suffix);
 
             // Explain WHICH inhibitor blocked and how its radius was arrived at.
             // Only on a real refused launch, never the per-frame cursor path.
@@ -203,16 +211,19 @@ DEFINE_HOOK(0x4FAE50, HouseClass_Fire_SW_ConstraintVeto, 0x7)
                                 suppressed))
             {
                 const auto spec = pExt->Money.Resolve(firerIsHuman);
+
+                char suffix[64] = {};
+                if (suppressed)
+                {
+                    _snprintf_s(suffix, sizeof(suffix),
+                                " (+%d attempt(s) since last line)", suppressed);
+                }
+
                 Debug::Log("[SuperWeaponExt] denied %s for house %d: credits %d "
-                           "fails cost %d / min %d / max %d (%s)",
+                           "fails cost %d / min %d / max %d (%s)%s\n",
                            pSuper->Type->ID, pThis->ArrayIndex, money,
                            spec.Cost, spec.Min, spec.Max,
-                           firerIsHuman ? "human" : "AI");
-
-                if (suppressed)
-                    Debug::Log(" (+%d attempt(s) since last line)", suppressed);
-
-                Debug::Log("\n");
+                           firerIsHuman ? "human" : "AI", suffix);
             }
 
             R->AL(0);

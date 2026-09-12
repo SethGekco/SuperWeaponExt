@@ -720,11 +720,13 @@ void SWTypeExt::ExtData::LogDenialSig(HouseClass* pFirer, const CellStruct& cell
 
         auto const pType = TechnoTypeClass::Array.GetItemOrDefault(src.TypeIndex);
 
+        // ⚠ ONE call. Debug::Log prepends "[Phobos] " to every call, so the
+        // previous two-call split emitted the prefix in the middle of the line.
         Debug::Log("[SuperWeaponExt]   blocked by %s at (%d,%d): radius %d "
-                   "(base %d + growth %d + ratio %d*%d counted", 
+                   "(base %d + growth %d + ratio %d*%d counted) [frame %d]\n",
                    pType ? pType->ID : "?", src.CellX, src.CellY,
-                   final_, base, growth, this->Inhibitors.Ratio.PerUnit, count);
-        Debug::Log(") [frame %d]\n", ctx.Frames);
+                   final_, base, growth, this->Inhibitors.Ratio.PerUnit, count,
+                   ctx.Frames);
         return;   // one explanation is enough
     }
 }
