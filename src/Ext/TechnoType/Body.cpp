@@ -60,6 +60,38 @@ namespace
         return out;
     }
 
+    // Who, besides the owner, receives a building's SuperWeapon=.
+    void ReadGrantTo(CCINIClass* pINI, const char* section,
+                     SWExt::Relation& into, const char* logName)
+    {
+        char buf[64] = {};
+        if (pINI->ReadString(section, "SWExt.SuperWeapon.GrantTo", "", buf, sizeof(buf)) <= 0)
+            return;
+
+        using R = SWExt::Relation;
+        if (!_strcmpi(buf, "none") || !_strcmpi(buf, "owner"))           into = R::None;
+        else if (!_strcmpi(buf, "allies") || !_strcmpi(buf, "ally"))     into = R::Allies;
+        else if (!_strcmpi(buf, "enemies") || !_strcmpi(buf, "enemy"))   into = R::Enemies;
+        else if (!_strcmpi(buf, "team"))                                 into = R::Team;
+        else if (!_strcmpi(buf, "notallies"))                            into = R::NotAllies;
+        else if (!_strcmpi(buf, "notowner"))                             into = R::NotOwner;
+        else if (!_strcmpi(buf, "all"))                                  into = R::All;
+        else
+        {
+            Debug::Log("[SuperWeaponExt] [%s] SWExt.SuperWeapon.GrantTo='%s' is not "
+                       "recognised (none/allies/enemies/team/notallies/notowner/"
+                       "all); ignoring\n", logName, buf);
+            return;
+        }
+
+        if (into != R::None)
+        {
+            Debug::Log("[SuperWeaponExt] [%s] will ALSO grant its SuperWeapon= to "
+                       "relation mask %d (measured from its owner)\n",
+                       logName, static_cast<int>(into));
+        }
+    }
+
     // Weapon override when the TARGET is a designator/inhibitor.
     void ReadWeaponVs(CCINIClass* pINI, const char* section,
                       TechnoTypeExt::ExtData::WeaponVsSpec& into)
@@ -196,6 +228,8 @@ void TechnoTypeExt::ExtData::LoadFromINIFile(CCINIClass* pINI)
     ReadStandingOrder(pINI, section, this->Order);
 
     ReadWeaponVs(pINI, section, this->WeaponVs);
+
+    ReadGrantTo(pINI, section, this->SuperWeaponGrantTo, section);
 }
 
 // Type data is re-parsed from the rules INI on every load, so there is nothing

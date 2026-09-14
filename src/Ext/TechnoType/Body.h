@@ -68,6 +68,12 @@ public:
 
         WeaponVsSpec WeaponVs;
 
+        // BUILDINGS only: who ELSE receives this building's SuperWeapon=.
+        // Relation is measured from the BUILDING'S OWNER, so `enemies` means
+        // "the owner's enemies get it". None (the default) = vanilla behaviour,
+        // owner only. See Ext/Techno/Hooks.SWGrant.cpp.
+        SWExt::Relation SuperWeaponGrantTo = SWExt::Relation::None;
+
         // Cache for UnifiedIndex(). <0 = not computed yet.
         int CachedUnifiedIndex = -1;
 

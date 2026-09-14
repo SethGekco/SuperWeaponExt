@@ -24,4 +24,9 @@ namespace SWExt::StandingOrders
     // in Hooks.ParaDrop.cpp — see the comment there for why this is not its own
     // DEFINE_HOOK.
     void Tick();
+
+    // A building granting its SuperWeapon= to houses OTHER than its owner.
+    // Lives in Hooks.SWGrant.cpp; shares this header because it rides the same
+    // per-frame seat. See that file for why it must re-grant every tick.
+    void TickCrossHouseGrants();
 }

@@ -751,3 +751,47 @@ commented out) would silently disable all of them.
 > weapon index exists or that the weapon can actually hit the target. An index
 > pointing at a weapon with no `Projectile=` will misbehave exactly as it would
 > anywhere else.
+
+---
+
+## A building's superweapon, granted to other houses
+
+Vanilla grants a building's `SuperWeapon=` to its own owner and nobody else.
+This lets the same building hand the cameo to somebody else as well:
+
+```ini
+[GAAIRC]
+SuperWeapon=ENEMYNUKE                 ; vanilla key, unchanged
+SWExt.SuperWeapon.GrantTo=enemies     ; none(default) | allies | enemies | team
+                                      ; | notallies | notowner | all
+```
+
+The relation is measured **from the building's owner**, so `enemies` means "the
+owner's enemies get it". The owner keeps whatever the engine already gives them —
+this only ever *adds* recipients. Both `SuperWeapon=` and `SuperWeapon2=` are
+covered.
+
+A recipient keeps the superweapon only while a qualifying building is alive,
+powered, not EMP'd and not being built or sold — the same conditions the engine
+applies to a house's own buildings. Destroy it and the recipients lose it.
+
+### Why this needs to re-grant every tick
+
+Antares replaces superweapon availability wholesale (`0x50AF10`, `0x50B1D0`,
+`0x6CB7B0`), and its scan only ever looks at **`pHouse->Buildings`** — the
+house's own. Anything it cannot justify from that list is `Lose()`d on the next
+update, so a one-off `Grant()` is revoked within a frame.
+
+Rather than contend for those addresses — Antares' handlers are full
+replacements returning non-zero, so a same-address chain behind them never runs —
+this re-grants each tick and restores the recharge timer that `Grant()` resets.
+Antares' `Lose()` clears `IsPresent`/`IsReady` but leaves `RechargeTimer` alone,
+which is what makes the restore exact.
+
+> Without that restore the charge would reset every tick and a cross-granted
+> superweapon would never become ready. If you see one sitting permanently at
+> full recharge, that is the symptom.
+
+Revocation is deliberately left to Antares: when the rule stops applying we
+simply stop restoring, and its next update removes the superweapon — keeping the
+sidebar and tech-tree bookkeeping in the incumbent's hands.
