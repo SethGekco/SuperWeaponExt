@@ -101,6 +101,13 @@ public:
         // Financial requirements for firing. Inert unless configured.
         SWExt::MoneyRule Money;
 
+        // Antares' own SW.AllowPlayer / SW.AllowAI, read here so our cross-house
+        // grant honours them. We are READING the incumbent's tags to obey them,
+        // not redefining them — a superweapon a house's own rules would refuse
+        // must not arrive by the side door.
+        bool AllowPlayer = true;
+        bool AllowAI     = true;
+
         // Leave the cursor holding this superweapon after it fires, instead of
         // deselecting. Lets a player re-fire a fast-recharging superweapon
         // without hunting for the cameo again.

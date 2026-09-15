@@ -374,6 +374,10 @@ void SWTypeExt::ExtData::LoadFromINIFile(CCINIClass* pINI)
     this->ParaDrop = ParaDropConfig{};
     ReadMoneyRule(pINI, section, this->Money);
 
+    // Antares' tags, honoured rather than redefined (see Body.h).
+    this->AllowPlayer = pINI->ReadBool(section, "SW.AllowPlayer", true);
+    this->AllowAI     = pINI->ReadBool(section, "SW.AllowAI", true);
+
     this->ParaDrop.Enabled = pINI->ReadBool(section, "SWExt.ParaDrop", false);
 
     if (this->ParaDrop.Enabled)

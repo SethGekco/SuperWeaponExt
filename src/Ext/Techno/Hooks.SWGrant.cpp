@@ -40,6 +40,12 @@
  * BuildingTypeClass derives from TechnoTypeClass, and our container hooks the
  * shared TechnoTypeClass CTOR, so buildings already carry ext data.
  *
+ * ⚠ We honour the RECIPIENT's own eligibility via SW.AllowPlayer / SW.AllowAI.
+ * Antares enforces those inside IsAvailable(), which has no address we can call,
+ * so those two tags are re-read into our own ext and applied here. Other parts of
+ * IsAvailable (RequiredHouses, AuxBuildings, Shots) are NOT yet mirrored — a
+ * cross-granted superweapon can still bypass those. Documented, not silent.
+ *
  * ⚠ DETERMINISM. Everything here is synced state: the building list, house
  * relations and the frame counter. No local player, cursor or view. Every client
  * grants and restores identically.
@@ -186,8 +192,20 @@ void SWExt::StandingOrders::TickCrossHouseGrants()
                 }
 
                 SuperClass* const pSuper = pHouse->Supers.GetItemOrDefault(swIdx);
-                if (!pSuper)
+                if (!pSuper || !pSuper->Type)
                     continue;
+
+                // Honour the recipient's own eligibility. Antares gates presence
+                // on IsAvailable(), which is C++ with no address we can call, so
+                // we read the same SW.AllowPlayer / SW.AllowAI tags and apply
+                // them ourselves. Without this a cross-grant would be a side
+                // door around rules the modder already wrote.
+                if (auto const pSWExt = SWTypeExt::ExtMap.Find(pSuper->Type))
+                {
+                    const bool human = pHouse->IsControlledByHuman();
+                    if (human ? !pSWExt->AllowPlayer : !pSWExt->AllowAI)
+                        continue;
+                }
 
                 GrantRecord* pRec = Find(pHouse->ArrayIndex, swIdx);
                 if (!pRec)
