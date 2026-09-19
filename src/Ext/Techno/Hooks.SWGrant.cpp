@@ -118,12 +118,24 @@ namespace
 void SWExt::StandingOrders::TickCrossHouseGrants()
 {
     // Cheap global early-out: nothing configured means one flag test per frame.
+    //
+    // ⚠ RE-CHECKED periodically, not once. A one-shot check latches whatever was
+    // true on the very first tick, so if that fired before the rules ext was
+    // populated the feature would stay silently disabled for the whole session
+    // with no way to tell from the log. The standing-order tick already learned
+    // this; this one did not, originally.
     static bool s_any = false;
-    static bool s_checked = false;
+    static int  s_lastCheck = -100000;
 
-    if (!s_checked)
+    const int frame = Unsorted::CurrentFrame;
+
+    if (frame < s_lastCheck || frame - s_lastCheck >= 900)
     {
-        s_checked = true;
+        s_lastCheck = frame;
+
+        const bool was = s_any;
+        s_any = false;
+
         for (int i = 0; i < BuildingTypeClass::Array.Count; ++i)
         {
             auto const pType = BuildingTypeClass::Array.GetItem(i);
@@ -137,10 +149,22 @@ void SWExt::StandingOrders::TickCrossHouseGrants()
                 break;
             }
         }
+
+        if (s_any != was)
+        {
+            Debug::Log("[SuperWeaponExt] cross-grant scan %s (frame %d)\n",
+                       s_any ? "ENABLED" : "disabled", frame);
+        }
     }
 
     if (!s_any)
         return;
+
+    // Survey counters — why a configured rule produced no grants is otherwise
+    // invisible, and "nothing in the log" has cost this project several rounds.
+    int surveyConfigured = 0, surveyNotSourcing = 0;
+    int surveyBuildings = 0, surveyNoSW = 0, surveyHousesSeen = 0;
+    int surveySkipRelation = 0, surveySkipEligible = 0, surveySkipNoSuper = 0;
 
     for (auto& g : g_grants)
         g.Seen = false;
@@ -151,7 +175,7 @@ void SWExt::StandingOrders::TickCrossHouseGrants()
     for (int i = 0; i < BuildingClass::Array.Count; ++i)
     {
         BuildingClass* const pBld = BuildingClass::Array.GetItem(i);
-        if (!BuildingCanSource(pBld))
+        if (!pBld)
             continue;
 
         auto const pType = pBld->Type;
@@ -162,11 +186,28 @@ void SWExt::StandingOrders::TickCrossHouseGrants()
         if (!pTypeExt || pTypeExt->SuperWeaponGrantTo == SWExt::Relation::None)
             continue;
 
+        // Counted BEFORE the sourcing test, so the survey can tell "no such
+        // building on the map" apart from "it is there but unpowered / still
+        // being built" — two very different problems that would otherwise
+        // produce the same empty log.
+        ++surveyConfigured;
+
+        if (!BuildingCanSource(pBld))
+        {
+            ++surveyNotSourcing;
+            continue;
+        }
+
+        ++surveyBuildings;
+
         HouseClass* const pOwner = pBld->Owner;
         if (!pOwner)
             continue;
 
         const int swIndices[2] = { pType->SuperWeapon, pType->SuperWeapon2 };
+
+        if (swIndices[0] < 0 && swIndices[1] < 0)
+            ++surveyNoSW;
 
         for (int s = 0; s < 2; ++s)
         {
@@ -185,15 +226,21 @@ void SWExt::StandingOrders::TickCrossHouseGrants()
                 if (pHouse == pOwner)
                     continue;
 
+                ++surveyHousesSeen;
+
                 if (!SWExt::Matches(pTypeExt->SuperWeaponGrantTo,
                                     RelationOf(pOwner, pHouse)))
                 {
+                    ++surveySkipRelation;
                     continue;
                 }
 
                 SuperClass* const pSuper = pHouse->Supers.GetItemOrDefault(swIdx);
                 if (!pSuper || !pSuper->Type)
+                {
+                    ++surveySkipNoSuper;
                     continue;
+                }
 
                 // Honour the recipient's own eligibility. Antares gates presence
                 // on IsAvailable(), which is C++ with no address we can call, so
@@ -204,7 +251,10 @@ void SWExt::StandingOrders::TickCrossHouseGrants()
                 {
                     const bool human = pHouse->IsControlledByHuman();
                     if (human ? !pSWExt->AllowPlayer : !pSWExt->AllowAI)
+                    {
+                        ++surveySkipEligible;
                         continue;
+                    }
                 }
 
                 GrantRecord* pRec = Find(pHouse->ArrayIndex, swIdx);
@@ -246,6 +296,26 @@ void SWExt::StandingOrders::TickCrossHouseGrants()
                                pType->ID, pOwner->ArrayIndex);
                 }
             }
+        }
+    }
+
+    // Report the survey while nothing has been granted, throttled to once a
+    // minute. This is the line that says WHICH filter ate the grant, instead of
+    // leaving an empty log to be guessed at.
+    if (g_grants.empty())
+    {
+        static int s_lastSurvey = -100000;
+        if (frame < s_lastSurvey || frame - s_lastSurvey >= 900)
+        {
+            s_lastSurvey = frame;
+            Debug::Log("[SuperWeaponExt] cross-grant survey: %d configured "
+                       "building(s) on map, %d not currently sourcing "
+                       "(power/EMP/building/selling), %d sourcing, %d with no "
+                       "SuperWeapon=, %d house(s) considered; skipped %d on "
+                       "relation, %d on eligibility, %d with no SuperClass\n",
+                       surveyConfigured, surveyNotSourcing, surveyBuildings,
+                       surveyNoSW, surveyHousesSeen,
+                       surveySkipRelation, surveySkipEligible, surveySkipNoSuper);
         }
     }
 
