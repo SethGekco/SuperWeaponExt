@@ -491,7 +491,13 @@ DEFINE_HOOK(0x55B6B3, LogicClass_AI_SWExtFrameTick, 0x5)
 //   41599f:  ...                          ; too far -> keep flying
 //
 // 0x4159C8 leads to `call 0x415C60` = AircraftClass::Paradrop, confirming which
-// branch is which. The sibling path at 0x41593A does the same test.
+// branch is which.
+//
+// ⚠ ONE site, not two. An earlier version also hooked 0x41593A calling it "the
+// sibling path"; that address is inside AircraftClass::Mission_SpyPlaneOverfly
+// (function start 0x4157C0; Phobos holds 0x4157EB there). Both compare a
+// distance against RulesClass+0x54C, which is why it looked like a sibling. See
+// the removal note further down.
 //
 // ⚠ Both handlers ALWAYS return an explicit address and never 0. The stolen
 // bytes are only the `cmp`, so returning 0 would re-run it against the unchanged
@@ -519,7 +525,39 @@ namespace
         return pExt ? pExt->ParadropRadius : -1;
     }
 
-    // Shared decision for both test sites.
+    // The value the instruction we replaced actually read.
+    //
+    // ⚠ Do NOT use RulesClass::Instance->ParadropRadius here. Nothing validates
+    // that field's offset: RulesClass.h carries no offsetof static_assert, and
+    // neither Phobos nor Antares reads the field, so YRpp's layout is unchecked
+    // at exactly this point — and ParadropRadius sits immediately after three
+    // RocketStruct members, whose packed size is easy to get wrong. The stolen
+    // instruction was `cmp eax, [ecx+0x54c]` with ecx = [0x8871E0], so reading
+    // that exact address is correct by construction whatever YRpp thinks.
+    int VanillaParadropRadius()
+    {
+        auto const ppRules = reinterpret_cast<unsigned char**>(0x8871E0);
+        if (!ppRules || !*ppRules)
+            return 0x400;   // the ctor default at 0x665D1D, as a last resort
+
+        const int raw = *reinterpret_cast<int*>(*ppRules + 0x54C);
+
+        // One-time agreement check, so the layout question is answered from a
+        // real run instead of argued about.
+        static bool s_reported = false;
+        if (!s_reported)
+        {
+            s_reported = true;
+            const int viaYRpp = RulesClass::Instance->ParadropRadius;
+            Debug::Log("[SuperWeaponExt] [General]ParadropRadius: raw[+0x54C]=%d, "
+                       "YRpp field=%d -> %s\n", raw, viaYRpp,
+                       raw == viaYRpp ? "AGREE" : "MISMATCH (YRpp layout is off)");
+        }
+
+        return raw;
+    }
+
+    // Shared decision for the paradrop test site.
     //
     // Precedence, most specific first:
     //   1. SWExt.ParaDrop.Radius on the SUPERWEAPON that launched this plane
@@ -539,7 +577,7 @@ namespace
         if (radius < 0)
         {
             source = "[General]";
-            radius = RulesClass::Instance->ParadropRadius;
+            radius = VanillaParadropRadius();
         }
 
         const bool drop = distance <= radius;
@@ -578,12 +616,23 @@ DEFINE_HOOK(0x415997, AircraftClass_Mission_ParadropOverfly_Radius, 0x6)
     return ShouldDropNow(pThis, distance) ? Drop : KeepFlying;
 }
 
-DEFINE_HOOK(0x41593A, AircraftClass_Mission_ParadropApproach_Radius, 0x6)
-{
-    enum { Near = 0x415942, Far = 0x415956 };
-
-    GET(AircraftClass*, pThis, ESI);
-    GET(int, distance, EAX);
-
-    return ShouldDropNow(pThis, distance) ? Near : Far;
-}
+// ============================================================================
+// ⚠ REMOVED: a hook that used to sit at 0x41593A.
+//
+// It was added on the assumption that 0x41593A was "the sibling path" of the
+// paradrop distance test. It is not. 0x41593A lies inside the function starting
+// at 0x4157C0, which is AircraftClass::Mission_SpyPlaneOverfly — identified from
+// the hook registry, where Phobos holds 0x4157EB as
+// AircraftClass_Mission_SpyPlaneOverfly_MaxCount. The paradrop test is the other
+// function, starting at 0x415960, which is the one still hooked below.
+//
+// Both sites happen to compare a distance against RulesClass+0x54C, which is why
+// the mistake was easy to make and produced no compile or load error. The cost:
+// every spy plane overflight ran through our replacement of its own distance
+// check, and a wrong radius there makes the plane fail the `jg` at 0x415940,
+// skip the overfly-complete action at 0x415942, and keep flying instead of
+// completing its pass.
+//
+// Reported in game as "the spyplane circles its target rather than doing a
+// flyby". Do NOT re-add a hook here for paradrop purposes.
+// ============================================================================
