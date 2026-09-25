@@ -270,7 +270,8 @@ public:
 
     // Record that `pHouse` launched `swIndex` this frame. Called from the
     // Fire_SW hook, the one place every launch in the game passes through.
-    static void RecordLaunch(HouseClass* pHouse, int swIndex);
+    static void RecordLaunch(HouseClass* pHouse, int swIndex,
+                             const CellStruct& cell);
 
     // Per-frame evaluation, from the LogicClass::AI seat we already own.
     static void TickAutoFire();

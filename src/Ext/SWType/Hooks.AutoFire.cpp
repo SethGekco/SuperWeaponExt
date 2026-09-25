@@ -47,8 +47,9 @@ namespace
     // Launches seen this frame: (house index, SW index). Cleared each tick.
     struct Launch
     {
-        int HouseIndex;
-        int SWIndex;
+        int        HouseIndex;
+        int        SWIndex;
+        CellStruct Cell;      // where it landed, for AutoFireTarget::Trigger
     };
 
     std::vector<Launch> g_launches;
@@ -115,12 +116,12 @@ namespace
     }
 }
 
-void SWTypeExt::RecordLaunch(HouseClass* pHouse, int swIndex)
+void SWTypeExt::RecordLaunch(HouseClass* pHouse, int swIndex, const CellStruct& cell)
 {
     if (!pHouse || swIndex < 0)
         return;
 
-    g_launches.push_back(Launch{ pHouse->ArrayIndex, swIndex });
+    g_launches.push_back(Launch{ pHouse->ArrayIndex, swIndex, cell });
 }
 
 void SWTypeExt::TickAutoFire()
@@ -204,6 +205,9 @@ void SWTypeExt::TickAutoFire()
             in.Frame   = frame;
             in.Charged = pSuper->CanFire() != 0;
 
+            CellStruct triggerCell{};
+            bool haveTrigger = false;
+
             // Did a watched superweapon fire, by a house matching the relation?
             for (auto const& l : g_launches)
             {
@@ -223,7 +227,9 @@ void SWTypeExt::TickAutoFire()
 
                 if (SWExt::Matches(rule.OnSWFiredHouse, RelationOf(pOwner, pFirer)))
                 {
-                    in.SWFired = true;
+                    in.SWFired  = true;
+                    triggerCell = l.Cell;
+                    haveTrigger = true;
                     break;
                 }
             }
@@ -261,10 +267,36 @@ void SWTypeExt::TickAutoFire()
             if (!SWExt::ShouldAutoFire(rule, in, state))
                 continue;
 
-            // Where to put it. AI targeting belongs to Antares, so this uses the
-            // superweapon's own resolver — the same one the dedicated hotkey
-            // path uses — and falls back to the owner's base.
-            const CellStruct cell = pExt->ResolveHotkeyCell(pOwner);
+            // Where to put it.
+            //
+            // ⚠ SYNCED SOURCES ONLY. This used to call ResolveHotkeyCell, whose
+            // DEFAULT mode is Mouse — so every client would have launched at its
+            // own cursor position and desynced immediately. Auto-fire has its own
+            // target enum with no local-input modes for exactly that reason.
+            CellStruct cell{};
+            switch (rule.Target)
+            {
+            case SWExt::AutoFireTarget::Trigger:
+                // Retaliate where they hit. Falls back to our base if this rule
+                // fired for a non-superweapon reason (money, defeat, victory),
+                // where there is no triggering cell to speak of.
+                cell = haveTrigger ? triggerCell : pOwner->GetBaseCenter();
+                break;
+
+            case SWExt::AutoFireTarget::Cell:
+                cell.X = static_cast<short>(rule.TargetCellX);
+                cell.Y = static_cast<short>(rule.TargetCellY);
+                break;
+
+            case SWExt::AutoFireTarget::None:
+                cell = CellStruct::Empty;
+                break;
+
+            case SWExt::AutoFireTarget::Base:
+            default:
+                cell = pOwner->GetBaseCenter();
+                break;
+            }
 
             Debug::Log("[SuperWeaponExt] auto-fire %s for house %d (%s) at "
                        "(%d,%d): swFired %d defeat %d victory %d money %d\n",

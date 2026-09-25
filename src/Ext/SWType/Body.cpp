@@ -127,11 +127,51 @@ namespace
 
         for (auto const& tok : ReadList(pINI, section, "SWExt.AutoFire.OnSWFired"))
         {
+            // `any` matches every superweapon — "retaliate whenever they fire
+            // anything", without naming each one.
+            if (!_strcmpi(tok.c_str(), "any") || !_strcmpi(tok.c_str(), "all"))
+            {
+                into.OnSWFiredAny = true;
+                continue;
+            }
+
             if (auto const pSW = SuperWeaponTypeClass::Find(tok.c_str()))
                 into.OnSWFired.push_back(pSW->ArrayIndex);
             else
                 Debug::Log("[SuperWeaponExt] [%s] SWExt.AutoFire.OnSWFired: unknown "
                            "superweapon '%s'\n", section, tok.c_str());
+        }
+
+        // Target. Deliberately NOT the hotkey vocabulary: mouse/screen are local
+        // per-client state and would desync an auto-fired launch.
+        char tgt[64] = {};
+        if (pINI->ReadString(section, "SWExt.AutoFire.Target", "", tgt, sizeof(tgt)) > 0)
+        {
+            using T = SWExt::AutoFireTarget;
+            if (!_strcmpi(tgt, "base"))         into.Target = T::Base;
+            else if (!_strcmpi(tgt, "trigger")) into.Target = T::Trigger;
+            else if (!_strcmpi(tgt, "cell"))    into.Target = T::Cell;
+            else if (!_strcmpi(tgt, "none"))    into.Target = T::None;
+            else
+            {
+                Debug::Log("[SuperWeaponExt] [%s] SWExt.AutoFire.Target='%s' is not "
+                           "recognised (base/trigger/cell/none); using base. NOTE "
+                           "mouse and screen are intentionally absent -- they are "
+                           "local state and would desync an auto-fired launch\n",
+                           section, tgt);
+            }
+        }
+
+        // Positional, not "first non-zero wins" -- TargetCell=0,40 is a legal
+        // cell and must not collapse into the X slot twice.
+        {
+            int axis = 0;
+            for (auto const& tok : ReadList(pINI, section, "SWExt.AutoFire.TargetCell"))
+            {
+                if (axis == 0)      into.TargetCellX = std::atoi(tok.c_str());
+                else if (axis == 1) into.TargetCellY = std::atoi(tok.c_str());
+                ++axis;
+            }
         }
 
         ParseRelation(pINI, section, "SWExt.AutoFire.OnSWFired.House", into.OnSWFiredHouse);

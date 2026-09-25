@@ -891,3 +891,36 @@ techno-mode orders were otherwise **unfalsifiable from the log**: "the IFVs drov
 toward the enemy base" is equally consistent with homing on the intended power
 plant and on anything else standing there. That ambiguity produced one false
 confirmation already, before the per-subclass index bug was fixed.
+
+---
+
+## Auto-fire: where the shot lands, and an any-superweapon trigger
+
+```ini
+SWExt.AutoFire.Target=base       ; base (default) | trigger | cell | none
+SWExt.AutoFire.TargetCell=60,90  ; for Target=cell
+SWExt.AutoFire.OnSWFired=any     ; any superweapon at all, instead of a list
+```
+
+`Target=trigger` lands the shot **where the superweapon that triggered it hit** —
+retaliation at the point of impact. If the rule fired for a non-superweapon
+reason (money, defeat, victory) there is no triggering cell, so it falls back to
+your base.
+
+`OnSWFired=any` (or `all`) matches every superweapon, so "retaliate whenever they
+fire anything" needs no list. It composes with `.House=` and `.Houses=` as usual.
+
+### ⚠ Why there is no `mouse` or `screen` here
+
+The hotkey path offers `SWExt.Hotkey.Target=mouse|screen`, and auto-fire
+deliberately does **not**.
+
+A hotkey press happens on **one** client and travels to the others as an event,
+so resolving it against that client's cursor is correct. An auto-fire condition
+is computed from synced state and is therefore true on **every** client on the
+same frame — if the cell came from the local cursor or the local view, each
+client would launch at a different place and the game would desync immediately.
+
+Every mode above reads only synced data. This is a fix, not a style choice: the
+first version of auto-fire reused the hotkey resolver, whose default mode is
+`mouse`.

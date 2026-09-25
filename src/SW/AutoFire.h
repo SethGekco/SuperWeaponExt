@@ -37,11 +37,32 @@
 
 namespace SWExt
 {
+    // Where an auto-fired shot lands.
+    //
+    // ⚠ EVERY MODE HERE IS SYNCED, and that is the entire point. Auto-fire is
+    // evaluated on every client on the same frame, so if the target cell came
+    // from the local cursor or the local view each client would launch at a
+    // DIFFERENT cell — a guaranteed desync. The hotkey path may use the mouse
+    // because a keypress happens on ONE client and travels as an event; auto-fire
+    // may not. There is deliberately no Mouse or Screen option.
+    enum class AutoFireTarget : unsigned char
+    {
+        Base = 0,   // the firing house's base centre (default)
+        Trigger,    // where the superweapon that TRIGGERED us landed
+        Cell,       // a fixed cell
+        None,       // (0,0), for superweapons that ignore location
+    };
+
     struct AutoFireRule
     {
         bool Enabled = false;
 
+        AutoFireTarget Target = AutoFireTarget::Base;
+        int TargetCellX = 0;
+        int TargetCellY = 0;
+
         // --- momentary: one of these superweapons fired ---
+        bool OnSWFiredAny = false;                       // any superweapon at all
         std::vector<int> OnSWFired;                      // SW type indices
         Relation OnSWFiredHouse = Relation::Enemies;     // ...by this relation to us
         std::vector<int> OnSWFiredCountries;             // ...and, if set, these countries
@@ -66,15 +87,22 @@ namespace SWExt
             return this->OnMoneyMin >= 0 || this->OnMoneyMax >= 0;
         }
 
+        bool WatchesAnySW() const
+        {
+            return this->OnSWFiredAny || !this->OnSWFired.empty();
+        }
+
         bool Active() const
         {
             return this->Enabled
-                && (!this->OnSWFired.empty() || this->HasMoneyBand()
+                && (this->WatchesAnySW() || this->HasMoneyBand()
                     || this->OnDefeat || this->OnVictory);
         }
 
         bool WatchesSW(int swIndex) const
         {
+            if (this->OnSWFiredAny)
+                return true;
             for (int idx : this->OnSWFired)
                 if (idx == swIndex)
                     return true;
@@ -150,7 +178,7 @@ namespace SWExt
             return false;
 
         const bool triggered =
-               (in.SWFired  && !rule.OnSWFired.empty())
+               (in.SWFired  && rule.WatchesAnySW())
             || (in.Defeated && rule.OnDefeat)
             || (in.Victory  && rule.OnVictory)
             || moneyEdge;

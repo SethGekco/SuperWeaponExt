@@ -308,7 +308,7 @@ DEFINE_HOOK(0x4FAE50, HouseClass_Fire_SW_ConstraintVeto, 0x7)
 
     // Auto-fire: note that this launch happened, for rules watching it. Recorded
     // rather than acted on, so nothing fires from inside another launch.
-    SWTypeExt::RecordLaunch(pThis, idxSW);
+    SWTypeExt::RecordLaunch(pThis, idxSW, *pCoords);
 
     if (pExt->ParaDrop.Enabled
         && SWTypeExt::RunOwnedParaDrop(pSuper->Type, pThis, *pCoords))
