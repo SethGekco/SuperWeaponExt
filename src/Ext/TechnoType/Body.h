@@ -60,9 +60,25 @@ public:
             SuperWeaponTypeClass* InhibitorSW  = nullptr;
             SuperWeaponTypeClass* DesignatorSW = nullptr;
 
+            // Firer-side: use this weapon while THIS techno is itself standing
+            // inside an inhibitor's / designator's radius. The other two are
+            // target-side ("what am I shooting AT"); these are "what am I
+            // standing IN" — the wishlist's "whether the parent is under the
+            // influence, or firing at something that is".
+            int WhileNearInhibitor  = -1;
+            int WhileNearDesignator = -1;
+
             bool Active() const
             {
-                return this->VsInhibitor >= 0 || this->VsDesignator >= 0;
+                return this->VsInhibitor >= 0 || this->VsDesignator >= 0
+                    || this->WhileNearInhibitor >= 0
+                    || this->WhileNearDesignator >= 0;
+            }
+
+            bool NeedsInfluence() const
+            {
+                return this->WhileNearInhibitor >= 0
+                    || this->WhileNearDesignator >= 0;
             }
         };
 

@@ -101,6 +101,11 @@ namespace
         into.VsInhibitor  = pINI->ReadInteger(section, "SWExt.Weapon.VsInhibitor", -1);
         into.VsDesignator = pINI->ReadInteger(section, "SWExt.Weapon.VsDesignator", -1);
 
+        into.WhileNearInhibitor =
+            pINI->ReadInteger(section, "SWExt.Weapon.WhileNearInhibitor", -1);
+        into.WhileNearDesignator =
+            pINI->ReadInteger(section, "SWExt.Weapon.WhileNearDesignator", -1);
+
         if (pINI->ReadString(section, "SWExt.Weapon.VsInhibitor.SW", "", buf, sizeof(buf)) > 0)
         {
             into.InhibitorSW = SuperWeaponTypeClass::Find(buf);
@@ -120,9 +125,11 @@ namespace
         if (into.Active())
         {
             Debug::Log("[SuperWeaponExt] [%s] weapon override: vs inhibitor %d%s, "
-                       "vs designator %d%s\n", section,
+                       "vs designator %d%s, while-near inhibitor %d, "
+                       "while-near designator %d\n", section,
                        into.VsInhibitor,  into.InhibitorSW  ? " (scoped)" : "",
-                       into.VsDesignator, into.DesignatorSW ? " (scoped)" : "");
+                       into.VsDesignator, into.DesignatorSW ? " (scoped)" : "",
+                       into.WhileNearInhibitor, into.WhileNearDesignator);
         }
     }
 

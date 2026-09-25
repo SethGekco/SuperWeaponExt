@@ -840,3 +840,54 @@ The cross-grant survey line reports the split, so you can see it working:
 ... N house(s) considered; skipped N on relation, N on eligibility,
     N with no SuperClass, N neutral
 ```
+
+---
+
+## A different weapon while standing inside an inhibitor or designator
+
+The `Vs*` keys above are **target-side** — "what am I shooting at". These are
+**firer-side** — "what am I standing in":
+
+```ini
+[MTNK]
+SWExt.Weapon.WhileNearInhibitor=1
+SWExt.Weapon.WhileNearDesignator=1
+```
+
+Together they cover the wishlist's "control whether the parent is under the
+influence, or firing at something that is".
+
+Target-side rules are checked **first**; a type that configures both never
+depends on evaluation order. Precedence is fixed: `VsInhibitor`,
+`VsDesignator`, `WhileNearInhibitor`, `WhileNearDesignator`.
+
+### Which radius counts
+
+The radius is the source's **veterancy-resolved** `SWExt.InhibitorRange` /
+`SWExt.DesignatorRange`, falling back to `Sight` when unset.
+
+> It deliberately does **not** include the per-superweapon `Ranges` override,
+> `Growth` over time, or the proximity `Ratio`. Those are properties of a
+> *(superweapon, source)* pair, and weapon selection has no superweapon in hand —
+> there is nothing to evaluate them against. So a growing inhibitor blocks
+> launches out to its grown radius but changes weapon choice out to its base
+> radius. Anything else would mean inventing a superweapon to measure with.
+
+Cost: the influence list is rebuilt at most **once per frame**, and only when
+some loaded type actually asks for a `WhileNear` rule. Weapon selection is called
+from targeting, cursor rendering, threat evaluation and firing, so a per-call
+scan would not be defensible.
+
+---
+
+## Standing orders now log what they picked
+
+```
+[SuperWeaponExt] standing order: FV -> NAPOWR at (54,102)
+```
+
+One line per (ordered type, chosen target type) pairing. This exists because
+techno-mode orders were otherwise **unfalsifiable from the log**: "the IFVs drove
+toward the enemy base" is equally consistent with homing on the intended power
+plant and on anything else standing there. That ambiguity produced one false
+confirmation already, before the per-subclass index bug was fixed.

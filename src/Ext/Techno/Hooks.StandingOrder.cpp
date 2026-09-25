@@ -49,6 +49,7 @@
 #include <TechnoTypeClass.h>
 #include <Utilities/Debug.h>
 
+#include <utility>
 #include <vector>
 
 namespace
@@ -86,6 +87,28 @@ namespace
         int         CellX;
         int         CellY;
     };
+
+    // One line per (ordered type, chosen target type) pair, ever.
+    //
+    // ⚠ WHY THIS EXISTS. Without it, techno-mode orders are UNFALSIFIABLE from
+    // the log: "the IFVs drove toward the enemy base" is equally consistent with
+    // homing on the intended power plant and on anything else that happens to be
+    // there. That ambiguity already cost a false confirmation once — the
+    // 2026-09-03 sighting was made while the per-subclass index bug meant the
+    // rule also matched the enemy MCV, GIs and Grizzlies.
+    //
+    // Throttled to one line per pairing because the tick runs every frame.
+    std::vector<std::pair<int, int>> g_logged;
+
+    bool ShouldLogOrder(int unitTypeIdx, int targetTypeIdx)
+    {
+        for (auto const& e : g_logged)
+            if (e.first == unitTypeIdx && e.second == targetTypeIdx)
+                return false;
+
+        g_logged.emplace_back(unitTypeIdx, targetTypeIdx);
+        return true;
+    }
 
     // "Idle" = the player or AI has not given it something to do. Deliberately
     // conservative: a standing order must never countermand a real order.
@@ -304,6 +327,21 @@ void SWExt::StandingOrders::Tick()
                 destination.X   = static_cast<short>(pPick->CellX);
                 destination.Y   = static_cast<short>(pPick->CellY);
                 haveDestination = true;
+
+                // Name the type actually chosen, so "it went to a power plant"
+                // can be told apart from "it went to something that merely
+                // shares an index".
+                if (ShouldLogOrder(TechnoTypeExt::UnifiedIndex(pType),
+                                   pPick->TypeIndex))
+                {
+                    auto const pPicked =
+                        TechnoTypeClass::Array.GetItemOrDefault(pPick->TypeIndex);
+
+                    Debug::Log("[SuperWeaponExt] standing order: %s -> %s at "
+                               "(%d,%d)\n", pType->ID,
+                               pPicked ? pPicked->ID : "?",
+                               pPick->CellX, pPick->CellY);
+                }
             }
         }
 

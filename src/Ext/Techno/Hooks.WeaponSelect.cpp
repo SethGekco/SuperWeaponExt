@@ -53,12 +53,15 @@
 #include <Ext/TechnoType/Body.h>
 
 #include <SuperWeaponTypeClass.h>
+#include <CellClass.h>
+#include <Fundamentals.h>
 #include <TechnoClass.h>
 #include <TechnoTypeClass.h>
 #include <Utilities/Debug.h>
 #include <Utilities/Macro.h>
 
 #include <algorithm>
+#include <cstdint>
 #include <utility>
 #include <vector>
 
@@ -155,6 +158,112 @@ namespace
         return InSorted(wantInhibitor ? g_inhibitorTypes : g_designatorTypes, typeIndex);
     }
 
+    // -------------------------------------------------------------------------
+    // "Is this techno standing inside an inhibitor's / designator's radius?"
+    //
+    // Built at most ONCE PER FRAME, and only when some loaded type actually asks
+    // for a WhileNear rule — weapon selection is called from targeting, cursor
+    // rendering, threat evaluation and firing, so a per-call scan of the techno
+    // array would be indefensible. The per-frame list is small (one entry per
+    // inhibitor/designator on the map), so the per-call test over it is cheap.
+    //
+    // ⚠ SIMPLIFICATION, deliberate and documented: the radius used here is the
+    // TechnoType's veterancy-resolved InhibitorRange / DesignatorRange only. It
+    // does NOT include the per-superweapon Ranges override, growth over time or
+    // the proximity ratio, because those are properties of a (superweapon,
+    // source) PAIR and weapon selection has no superweapon in hand. So a growing
+    // inhibitor influences the launch veto out to its grown radius but influences
+    // weapon choice out to its base radius. Anything else would require inventing
+    // a superweapon to evaluate against.
+    // -------------------------------------------------------------------------
+    struct Influence
+    {
+        int  CellX;
+        int  CellY;
+        int  Range;      // cells
+        bool IsInhibitor;
+        bool IsDesignator;
+    };
+
+    std::vector<Influence> g_influence;
+    int g_influenceFrame = -1;
+
+    void EnsureInfluence()
+    {
+        const int frame = Unsorted::CurrentFrame;
+        if (g_influenceFrame == frame)
+            return;
+
+        g_influenceFrame = frame;
+        g_influence.clear();
+
+        EnsureCache();
+
+        for (int i = 0; i < TechnoClass::Array.Count; ++i)
+        {
+            TechnoClass* const pTechno = TechnoClass::Array.GetItem(i);
+            if (!pTechno || !pTechno->IsAlive || pTechno->Health <= 0
+                || pTechno->InLimbo)
+            {
+                continue;
+            }
+
+            auto const pType = pTechno->GetTechnoType();
+            if (!pType)
+                continue;
+
+            const int typeIndex = TechnoTypeExt::UnifiedIndex(pType);
+            const bool inhib = InSorted(g_inhibitorTypes, typeIndex);
+            const bool desig = InSorted(g_designatorTypes, typeIndex);
+            if (!inhib && !desig)
+                continue;
+
+            auto const pTypeExt = TechnoTypeExt::ExtMap.Find(pType);
+            if (!pTypeExt)
+                continue;
+
+            const auto rank = pTechno->Veterancy.IsElite()   ? SWExt::Rank::Elite
+                            : pTechno->Veterancy.IsVeteran() ? SWExt::Rank::Veteran
+                                                             : SWExt::Rank::Rookie;
+
+            // Sight is the engine's fallback when nothing was configured, the
+            // same default the constraint evaluator uses.
+            const int sight = pType->Sight;
+            const int range = inhib ? pTypeExt->InhibitorRange.Resolve(rank, sight)
+                                    : pTypeExt->DesignatorRange.Resolve(rank, sight);
+
+            if (range <= 0)
+                continue;
+
+            const auto cell = CellClass::Coord2Cell(pTechno->GetCoords());
+            g_influence.push_back(Influence{ cell.X, cell.Y, range, inhib, desig });
+        }
+    }
+
+    bool StandingInInfluence(TechnoClass* pTechno, bool wantInhibitor)
+    {
+        if (!pTechno)
+            return false;
+
+        EnsureInfluence();
+
+        const auto cell = CellClass::Coord2Cell(pTechno->GetCoords());
+
+        for (auto const& inf : g_influence)
+        {
+            if (wantInhibitor ? !inf.IsInhibitor : !inf.IsDesignator)
+                continue;
+
+            const std::int64_t dx = static_cast<std::int64_t>(inf.CellX) - cell.X;
+            const std::int64_t dy = static_cast<std::int64_t>(inf.CellY) - cell.Y;
+            const std::int64_t r  = inf.Range;
+
+            if (dx * dx + dy * dy <= r * r)
+                return true;
+        }
+        return false;
+    }
+
     // One log line per (firer type, target type) pair, ever.
     //
     // Weapon selection runs from targeting, cursor rendering, threat evaluation
@@ -235,17 +344,34 @@ namespace
                           && rule.VsDesignator >= 0
                           && ActsAs(pTargetType, false, rule.DesignatorSW);
 
-        if (!vsInhib && !vsDesig)
+        // Firer-side, checked only if no target-side rule already applied. The
+        // ordering is arbitrary but FIXED, so a type configuring both never
+        // depends on evaluation order.
+        const bool nearInhib = !vsInhib && !vsDesig
+                            && rule.WhileNearInhibitor >= 0
+                            && StandingInInfluence(pThis, true);
+        const bool nearDesig = !vsInhib && !vsDesig && !nearInhib
+                            && rule.WhileNearDesignator >= 0
+                            && StandingInInfluence(pThis, false);
+
+        if (!vsInhib && !vsDesig && !nearInhib && !nearDesig)
             return chosen;
 
-        const int override_ = vsInhib ? rule.VsInhibitor : rule.VsDesignator;
+        const int override_ = vsInhib   ? rule.VsInhibitor
+                            : vsDesig   ? rule.VsDesignator
+                            : nearInhib ? rule.WhileNearInhibitor
+                                        : rule.WhileNearDesignator;
+
+        const char* why = vsInhib   ? "inhibitor"
+                        : vsDesig   ? "designator"
+                        : nearInhib ? "near inhibitor"
+                                    : "near designator";
 
         if (ShouldLog(TechnoTypeExt::UnifiedIndex(pType),
                       TechnoTypeExt::UnifiedIndex(pTargetType)))
         {
             Debug::Log("[SuperWeaponExt] %s vs %s (%s): weapon %d -> %d\n",
-                       pType->ID, pTargetType->ID,
-                       vsInhib ? "inhibitor" : "designator", chosen, override_);
+                       pType->ID, pTargetType->ID, why, chosen, override_);
         }
 
         return override_;
