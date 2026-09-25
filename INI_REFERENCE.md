@@ -924,3 +924,61 @@ client would launch at a different place and the game would desync immediately.
 Every mode above reads only synced data. This is a fix, not a style choice: the
 first version of auto-fire reused the hotkey resolver, whose default mode is
 `mouse`.
+
+---
+
+## `[SOMEBEACON]` — beacon type (DESIGN, not yet wired)
+
+A player-placed marker that superweapons and units react to. See
+`src/SW/Beacon.h` for the reasoning; the short version is that **the beacon is
+an invisible dummy techno**, so weapons can target it and the existing
+`SWExt.Designators` / `SWExt.Inhibitors` scan already sees it with no new code.
+
+Two primitives, kept separate on purpose: the **marker** (a techno plus a
+range) and the **trigger** (what fires at it and who reacts). A marker with no
+trigger is just a designator; a trigger can point at any marker.
+
+```ini
+[SWExtBeacons]
+0=SOMEBEACON                      ; list section, like [Warheads]
+
+[SOMEBEACON]
+; --- marker ---
+SWExt.Beacon.TechnoType=          ; the dummy techno spawned to represent it.
+                                  ;   Give it Invisible/Insignificant and no
+                                  ;   cell occupancy, or beacons block pathing
+                                  ;   and show up in scores.
+SWExt.Beacon.Range=5              ; cells — the radius everything measures
+SWExt.Beacon.Lifetime=-1          ; frames, <0 = until removed by the player
+SWExt.Beacon.Cooldown=0           ; frames before this house may place another
+SWExt.Beacon.MaxActive=1          ; simultaneous beacons of this type per house
+
+; --- superweapons ---
+SWExt.Beacon.FireSWs=             ; list of SuperWeaponTypes
+SWExt.Beacon.FireIntervals=       ; frames, positionally matched. 0 = fire once
+                                  ;   on placement
+SWExt.Beacon.UseSidebar=false     ; false = fire directly, ignoring charge and
+                                  ;   cameo. true = go through the sidebar so
+                                  ;   the shot still costs the player a charge
+
+; --- units ---
+SWExt.Beacon.Units=               ; list of TechnoTypes; empty = all of ours
+SWExt.Beacon.Response=none        ; none | inrangeonly | attackmove | aggressive
+SWExt.Beacon.BreakRangeLimits=false
+                                  ; let responders out-range their own weapons
+SWExt.Beacon.UnitNoticeRange=-1   ; how far units notice it; <0 = Beacon.Range
+```
+
+Placement is a command, so it is hotkey-bindable and CommandBarExt can surface
+it as a bar button **by name** with no linkage between the two DLLs — the same
+indirection the AggressiveStance button already uses.
+
+⚠ Placement must travel as a network event (vanilla beacon placement is
+`EventClass` type `0x12`, built at `0x4AC22C`). Applying it locally desyncs as
+soon as another client's targeting or pathing sees a different map. Firing, by
+contrast, is applied directly on every client — queueing a launch would make N
+clients produce N launches. Both rules are spelled out in `src/SW/AutoFire.h`.
+
+Suggested companion: a new `AutoFireTarget::Beacon` mode, so an existing
+auto-fire rule can aim at a beacon instead of a base centre. Beacon positions
+are synced, so that is legal where `Mouse`/`Screen` deliberately are not.
