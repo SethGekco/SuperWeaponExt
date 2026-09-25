@@ -205,6 +205,28 @@ static void Test_ChargeGate()
     CHECK(ShouldAutoFire(r, in, st2), "RequireCharged=no fires regardless");
 }
 
+// -----------------------------------------------------------------------------
+static void Test_CountryFilter()
+{
+    std::printf("country filter\n");
+
+    // Empty means ANY, so adding the feature cannot change existing configs --
+    // the thing most worth pinning down.
+    std::vector<int> none;
+    CHECK(CountryAllowed(none, 3),  "empty list allows any country");
+    CHECK(CountryAllowed(none, -1), "empty list allows an unresolved country");
+
+    std::vector<int> russians{ 3 };
+    CHECK(CountryAllowed(russians, 3),  "listed country passes");
+    CHECK(!CountryAllowed(russians, 4), "unlisted country is rejected");
+    CHECK(!CountryAllowed(russians, -1),
+          "an unresolved country fails a NON-empty list (conservative)");
+
+    std::vector<int> several{ 3, 7, 11 };
+    CHECK(CountryAllowed(several, 7),  "matches anywhere in the list");
+    CHECK(!CountryAllowed(several, 8), "near-misses are still misses");
+}
+
 int main()
 {
     std::printf("SuperWeaponExt auto-fire conditions\n\n");
@@ -215,6 +237,7 @@ int main()
     Test_BlockedEdgeIsConsumedNotDeferred();
     Test_Cooldown();
     Test_ChargeGate();
+    Test_CountryFilter();
 
     std::printf("\n%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;

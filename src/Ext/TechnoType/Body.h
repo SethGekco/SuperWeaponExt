@@ -74,6 +74,16 @@ public:
         // owner only. See Ext/Techno/Hooks.SWGrant.cpp.
         SWExt::Relation SuperWeaponGrantTo = SWExt::Relation::None;
 
+        // Do NEUTRAL / passive houses (civilians, the map's neutral house) count
+        // as recipients? Default NO.
+        //
+        // ⚠ This defaults to no as a FIX, not a preference. Relation is computed
+        // as owner/allies/enemies, and a neutral house is allied with nobody, so
+        // it read as an "enemy" and silently received every enemies-scoped
+        // cross-grant. Observed in game: 16 candidate houses with zero rejected
+        // on relation. Set yes for the "let neutrals fire a superweapon" case.
+        bool SuperWeaponGrantToNeutral = false;
+
         // Cache for UnifiedIndex(). <0 = not computed yet.
         int CachedUnifiedIndex = -1;
 

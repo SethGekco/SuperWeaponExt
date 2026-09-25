@@ -61,6 +61,7 @@
 #include <BuildingTypeClass.h>
 #include <Fundamentals.h>
 #include <HouseClass.h>
+#include <HouseTypeClass.h>   // MultiplayPassive, for the neutral test
 #include <SuperClass.h>
 #include <SuperWeaponTypeClass.h>
 #include <Utilities/Debug.h>
@@ -165,6 +166,7 @@ void SWExt::StandingOrders::TickCrossHouseGrants()
     int surveyConfigured = 0, surveyNotSourcing = 0;
     int surveyBuildings = 0, surveyNoSW = 0, surveyHousesSeen = 0;
     int surveySkipRelation = 0, surveySkipEligible = 0, surveySkipNoSuper = 0;
+    int surveySkipNeutral = 0;
 
     for (auto& g : g_grants)
         g.Seen = false;
@@ -225,6 +227,16 @@ void SWExt::StandingOrders::TickCrossHouseGrants()
                 // here would fight the engine for no benefit.
                 if (pHouse == pOwner)
                     continue;
+
+                // Neutral / passive houses are allied with nobody, so they read
+                // as "enemies" and would otherwise receive every enemies-scoped
+                // grant. Opt-in only.
+                if (!pTypeExt->SuperWeaponGrantToNeutral
+                    && pHouse->Type && pHouse->Type->MultiplayPassive)
+                {
+                    ++surveySkipNeutral;
+                    continue;
+                }
 
                 ++surveyHousesSeen;
 
@@ -312,10 +324,12 @@ void SWExt::StandingOrders::TickCrossHouseGrants()
                        "building(s) on map, %d not currently sourcing "
                        "(power/EMP/building/selling), %d sourcing, %d with no "
                        "SuperWeapon=, %d house(s) considered; skipped %d on "
-                       "relation, %d on eligibility, %d with no SuperClass\n",
+                       "relation, %d on eligibility, %d with no SuperClass, "
+                       "%d neutral\n",
                        surveyConfigured, surveyNotSourcing, surveyBuildings,
                        surveyNoSW, surveyHousesSeen,
-                       surveySkipRelation, surveySkipEligible, surveySkipNoSuper);
+                       surveySkipRelation, surveySkipEligible, surveySkipNoSuper,
+                       surveySkipNeutral);
         }
     }
 

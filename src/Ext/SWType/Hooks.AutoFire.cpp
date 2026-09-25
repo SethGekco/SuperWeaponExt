@@ -35,6 +35,7 @@
 
 #include <Fundamentals.h>
 #include <HouseClass.h>
+#include <HouseTypeClass.h>
 #include <SuperClass.h>
 #include <SuperWeaponTypeClass.h>
 #include <Utilities/Debug.h>
@@ -84,12 +85,19 @@ namespace
                                         : SWExt::Relation::Enemies;
     }
 
-    // Credits of the first house matching `rel`, or <0 if there is none.
+    int CountryOf(HouseClass* pHouse)
+    {
+        return (pHouse && pHouse->Type) ? pHouse->Type->ArrayIndex : -1;
+    }
+
+    // Credits of the first house matching `rel` (and the country filter), or <0
+    // if there is none.
     //
     // First-match rather than max/sum on purpose: it is the only choice that is
     // stable and obvious to a modder. A sum would make "an enemy has 5000" mean
     // something different in a 2-player and an 8-player game.
-    int WatchedMoney(HouseClass* pOwner, SWExt::Relation rel)
+    int WatchedMoney(HouseClass* pOwner, SWExt::Relation rel,
+                     const std::vector<int>& countries)
     {
         for (int i = 0; i < HouseClass::Array.Count; ++i)
         {
@@ -97,6 +105,8 @@ namespace
             if (!pHouse || pHouse->Defeated || pHouse->IsObserver())
                 continue;
             if (!SWExt::Matches(rel, RelationOf(pOwner, pHouse)))
+                continue;
+            if (!SWExt::CountryAllowed(countries, CountryOf(pHouse)))
                 continue;
 
             return pHouse->Available_Money();
@@ -208,6 +218,9 @@ void SWTypeExt::TickAutoFire()
                 if (pFirer == pOwner && l.SWIndex == s)
                     continue;
 
+                if (!SWExt::CountryAllowed(rule.OnSWFiredCountries, CountryOf(pFirer)))
+                    continue;
+
                 if (SWExt::Matches(rule.OnSWFiredHouse, RelationOf(pOwner, pFirer)))
                 {
                     in.SWFired = true;
@@ -223,6 +236,9 @@ void SWTypeExt::TickAutoFire()
                         continue;
 
                     HouseClass* const pDead = HouseClass::Array.GetItemOrDefault(d);
+                    if (!SWExt::CountryAllowed(rule.OnDefeatCountries, CountryOf(pDead)))
+                        continue;
+
                     if (pDead && SWExt::Matches(rule.OnDefeatHouse,
                                                 RelationOf(pOwner, pDead)))
                     {
@@ -239,7 +255,7 @@ void SWTypeExt::TickAutoFire()
                 in.Victory = (aliveHouses == 1 && !pOwner->Defeated);
 
             if (rule.HasMoneyBand())
-                in.Money = WatchedMoney(pOwner, rule.OnMoneyHouse);
+                in.Money = WatchedMoney(pOwner, rule.OnMoneyHouse, rule.OnMoneyCountries);
 
             auto& state = StateFor(pOwner->ArrayIndex, s);
             if (!SWExt::ShouldAutoFire(rule, in, state))

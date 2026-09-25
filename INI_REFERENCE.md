@@ -795,3 +795,48 @@ which is what makes the restore exact.
 Revocation is deliberately left to Antares: when the rule stops applying we
 simply stop restoring, and its next update removes the superweapon — keeping the
 sidebar and tech-tree bookkeeping in the incumbent's hands.
+
+---
+
+## Auto-fire: restricting a condition to specific countries
+
+Each auto-fire condition takes an optional country list, so "when the **Russians**
+are defeated" is expressible, not just "when an enemy is defeated":
+
+```ini
+SWExt.AutoFire.OnSWFired.Houses=Russians,Yuri
+SWExt.AutoFire.OnMoney.Houses=Americans
+SWExt.AutoFire.OnDefeat.Houses=Russians
+```
+
+These **narrow** the matching relation; they do not replace it. An empty list
+means any country, so a config that only uses `.House=` behaves exactly as
+before. A house whose country cannot be resolved passes an empty list but fails
+any non-empty one.
+
+---
+
+## Cross-house grants and neutral houses
+
+```ini
+[GAAIRC]
+SWExt.SuperWeapon.GrantTo=enemies
+SWExt.SuperWeapon.GrantTo.IncludeNeutral=no     ; default
+```
+
+> **This default is a fix, not a preference.** Relation is computed as
+> owner / allies / enemies, and a neutral or passive house is allied with nobody —
+> so it read as an *enemy* and silently received every `enemies`-scoped
+> cross-grant. Observed in game as 16 candidate houses with zero rejected on
+> relation.
+
+Set it to `yes` for the deliberate "let neutrals hold a superweapon" case. Pair
+it with an `SWExt.AutoFire` condition to get a neutral house that actually fires
+one, since a passive house has no AI to press the button.
+
+The cross-grant survey line reports the split, so you can see it working:
+
+```
+... N house(s) considered; skipped N on relation, N on eligibility,
+    N with no SuperClass, N neutral
+```

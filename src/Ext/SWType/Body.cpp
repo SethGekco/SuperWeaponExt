@@ -112,9 +112,11 @@ namespace
                    ai.Cost, ai.Min, ai.Max);
     }
 
-    // Defined below; ReadAutoFire is declared here so it can use it.
+    // Defined below; ReadAutoFire is declared here so it can use them.
     bool ParseRelation(CCINIClass* pINI, const char* section, const char* key,
                        SWExt::Relation& into);
+    void ReadCountryList(CCINIClass* pINI, const char* section, const char* key,
+                         std::vector<int>& into);
 
     // Auto-fire conditions. See SW/AutoFire.h for the momentary-vs-level split.
     void ReadAutoFire(CCINIClass* pINI, const char* section, SWExt::AutoFireRule& into)
@@ -135,6 +137,12 @@ namespace
         ParseRelation(pINI, section, "SWExt.AutoFire.OnSWFired.House", into.OnSWFiredHouse);
         ParseRelation(pINI, section, "SWExt.AutoFire.OnMoney.House",   into.OnMoneyHouse);
         ParseRelation(pINI, section, "SWExt.AutoFire.OnDefeat.House",  into.OnDefeatHouse);
+
+        // "...and only these countries." Empty = any, so a relation alone is
+        // unchanged and the filter is purely additive.
+        ReadCountryList(pINI, section, "SWExt.AutoFire.OnSWFired.Houses", into.OnSWFiredCountries);
+        ReadCountryList(pINI, section, "SWExt.AutoFire.OnMoney.Houses",   into.OnMoneyCountries);
+        ReadCountryList(pINI, section, "SWExt.AutoFire.OnDefeat.Houses",  into.OnDefeatCountries);
 
         into.OnMoneyMin = pINI->ReadInteger(section, "SWExt.AutoFire.OnMoney.Min", -1);
         into.OnMoneyMax = pINI->ReadInteger(section, "SWExt.AutoFire.OnMoney.Max", -1);

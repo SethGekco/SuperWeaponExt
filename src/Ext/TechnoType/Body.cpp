@@ -230,6 +230,9 @@ void TechnoTypeExt::ExtData::LoadFromINIFile(CCINIClass* pINI)
     ReadWeaponVs(pINI, section, this->WeaponVs);
 
     ReadGrantTo(pINI, section, this->SuperWeaponGrantTo, section);
+
+    this->SuperWeaponGrantToNeutral =
+        pINI->ReadBool(section, "SWExt.SuperWeapon.GrantTo.IncludeNeutral", false);
 }
 
 // Type data is re-parsed from the rules INI on every load, so there is nothing

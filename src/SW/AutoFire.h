@@ -44,15 +44,18 @@ namespace SWExt
         // --- momentary: one of these superweapons fired ---
         std::vector<int> OnSWFired;                      // SW type indices
         Relation OnSWFiredHouse = Relation::Enemies;     // ...by this relation to us
+        std::vector<int> OnSWFiredCountries;             // ...and, if set, these countries
 
         // --- level: a watched house's credits sit inside a band ---
         int      OnMoneyMin   = -1;                      // <0 = unset
         int      OnMoneyMax   = -1;
         Relation OnMoneyHouse = Relation::Enemies;
+        std::vector<int> OnMoneyCountries;
 
         // --- momentary ---
         bool     OnDefeat      = false;
         Relation OnDefeatHouse = Relation::Enemies;
+        std::vector<int> OnDefeatCountries;
         bool     OnVictory     = false;                  // the OWNER won
 
         int  Cooldown       = 0;      // frames between auto-fires; 0 = recharge only
@@ -97,6 +100,25 @@ namespace SWExt
         bool MoneyWasInBand = false;
         int  LastFiredFrame = -1000000;
     };
+
+    // Country filter for a condition: "when the RUSSIANS are defeated", not just
+    // "when an enemy is defeated".
+    //
+    // An EMPTY list means "any country" — so a relation alone keeps working
+    // exactly as before and the filter is purely additive. A house whose country
+    // cannot be resolved (index < 0) therefore passes an empty list but fails
+    // any non-empty one, which is the conservative reading.
+    inline bool CountryAllowed(const std::vector<int>& countries, int countryIndex)
+    {
+        if (countries.empty())
+            return true;
+
+        for (int idx : countries)
+            if (idx == countryIndex)
+                return true;
+
+        return false;
+    }
 
     inline bool MoneyInBand(const AutoFireRule& rule, int money)
     {
