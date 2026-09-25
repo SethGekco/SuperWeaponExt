@@ -27,6 +27,7 @@
     <ClCompile Include="src\Ext\SWType\Hooks.Launch.cpp" />
     <ClCompile Include="src\Ext\SWType\Hooks.Cursor.cpp" />
     <ClCompile Include="src\Ext\SWType\Hooks.ParaDrop.cpp" />
+    <ClCompile Include="src\Ext\SWType\Hooks.AutoFire.cpp" />
     <ClCompile Include="src\Commands\Commands.cpp" />
     <ClCompile Include="src\Ext\TechnoType\Body.cpp" />
     <ClCompile Include="src\Ext\Techno\Hooks.StandingOrder.cpp" />
@@ -46,6 +47,7 @@
     <ClInclude Include="src\SW\Formation.h" />
     <ClInclude Include="src\SW\StandingOrder.h" />
     <ClInclude Include="src\SW\Money.h" />
+    <ClInclude Include="src\SW\AutoFire.h" />
     <ClInclude Include="src\Ext\SWType\Body.h" />
     <ClInclude Include="src\Ext\TechnoType\Body.h" />
     <ClInclude Include="src\Ext\Techno\StandingOrders.h" />

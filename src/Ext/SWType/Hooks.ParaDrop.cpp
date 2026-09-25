@@ -473,6 +473,7 @@ DEFINE_HOOK(0x55B6B3, LogicClass_AI_SWExtFrameTick, 0x5)
     SWTypeExt::TickPendingParaDrops();
     SWExt::StandingOrders::Tick();
     SWExt::StandingOrders::TickCrossHouseGrants();
+    SWTypeExt::TickAutoFire();
     SweepPlaneRadius();
     return 0;
 }

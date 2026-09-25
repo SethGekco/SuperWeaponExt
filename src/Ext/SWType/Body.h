@@ -7,6 +7,7 @@
  * off-target; this class is only the INI front-end and the container plumbing.
  */
 #include <SW/Constraint.h>
+#include <SW/AutoFire.h>
 #include <SW/Money.h>
 #include <SW/Formation.h>
 
@@ -100,6 +101,9 @@ public:
 
         // Financial requirements for firing. Inert unless configured.
         SWExt::MoneyRule Money;
+
+        // Fire automatically when a condition occurs. Inert unless configured.
+        SWExt::AutoFireRule AutoFire;
 
         // Antares' own SW.AllowPlayer / SW.AllowAI, read here so our cross-house
         // grant honours them. We are READING the incumbent's tags to obey them,
@@ -261,6 +265,15 @@ public:
     // Ticked once per frame; launches any planes whose delay has elapsed and
     // re-arms the cursor for a KeepSelectedAfterFire superweapon.
     static void TickPendingParaDrops();
+
+    // --- auto-fire (Hooks.AutoFire.cpp) ---
+
+    // Record that `pHouse` launched `swIndex` this frame. Called from the
+    // Fire_SW hook, the one place every launch in the game passes through.
+    static void RecordLaunch(HouseClass* pHouse, int swIndex);
+
+    // Per-frame evaluation, from the LogicClass::AI seat we already own.
+    static void TickAutoFire();
 
     // Ask for the cursor to be put back on `swIndex` next frame, after the
     // engine has finished deselecting it. Local-player only.

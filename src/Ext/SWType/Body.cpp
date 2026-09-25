@@ -112,6 +112,55 @@ namespace
                    ai.Cost, ai.Min, ai.Max);
     }
 
+    // Defined below; ReadAutoFire is declared here so it can use it.
+    bool ParseRelation(CCINIClass* pINI, const char* section, const char* key,
+                       SWExt::Relation& into);
+
+    // Auto-fire conditions. See SW/AutoFire.h for the momentary-vs-level split.
+    void ReadAutoFire(CCINIClass* pINI, const char* section, SWExt::AutoFireRule& into)
+    {
+        into.Enabled = pINI->ReadBool(section, "SWExt.AutoFire", false);
+        if (!into.Enabled)
+            return;
+
+        for (auto const& tok : ReadList(pINI, section, "SWExt.AutoFire.OnSWFired"))
+        {
+            if (auto const pSW = SuperWeaponTypeClass::Find(tok.c_str()))
+                into.OnSWFired.push_back(pSW->ArrayIndex);
+            else
+                Debug::Log("[SuperWeaponExt] [%s] SWExt.AutoFire.OnSWFired: unknown "
+                           "superweapon '%s'\n", section, tok.c_str());
+        }
+
+        ParseRelation(pINI, section, "SWExt.AutoFire.OnSWFired.House", into.OnSWFiredHouse);
+        ParseRelation(pINI, section, "SWExt.AutoFire.OnMoney.House",   into.OnMoneyHouse);
+        ParseRelation(pINI, section, "SWExt.AutoFire.OnDefeat.House",  into.OnDefeatHouse);
+
+        into.OnMoneyMin = pINI->ReadInteger(section, "SWExt.AutoFire.OnMoney.Min", -1);
+        into.OnMoneyMax = pINI->ReadInteger(section, "SWExt.AutoFire.OnMoney.Max", -1);
+
+        into.OnDefeat  = pINI->ReadBool(section, "SWExt.AutoFire.OnDefeat", false);
+        into.OnVictory = pINI->ReadBool(section, "SWExt.AutoFire.OnVictory", false);
+
+        into.Cooldown       = pINI->ReadInteger(section, "SWExt.AutoFire.Cooldown", 0);
+        into.RequireCharged = pINI->ReadBool(section, "SWExt.AutoFire.RequireCharged", true);
+
+        if (into.Active())
+        {
+            Debug::Log("[SuperWeaponExt] [%s] auto-fire: %u watched SW(s), money "
+                       "%d..%d, defeat %d, victory %d, cooldown %d\n", section,
+                       static_cast<unsigned>(into.OnSWFired.size()),
+                       into.OnMoneyMin, into.OnMoneyMax,
+                       into.OnDefeat ? 1 : 0, into.OnVictory ? 1 : 0, into.Cooldown);
+        }
+        else
+        {
+            Debug::Log("[SuperWeaponExt] [%s] SWExt.AutoFire=yes but NO condition is "
+                       "set, so it will never fire (this is not the same as Antares' "
+                       "SW.AutoFire, which fires whenever charged)\n", section);
+        }
+    }
+
     // Resolve a comma list of COUNTRY names ([Americans], [Russians], ...) to
     // HouseTypeClass indices. Unknown names are reported and skipped rather than
     // silently dropped — a typo here would otherwise look like the filter simply
@@ -373,6 +422,8 @@ void SWTypeExt::ExtData::LoadFromINIFile(CCINIClass* pINI)
     // --- owned paradrop ---
     this->ParaDrop = ParaDropConfig{};
     ReadMoneyRule(pINI, section, this->Money);
+
+    ReadAutoFire(pINI, section, this->AutoFire);
 
     // Antares' tags, honoured rather than redefined (see Body.h).
     this->AllowPlayer = pINI->ReadBool(section, "SW.AllowPlayer", true);

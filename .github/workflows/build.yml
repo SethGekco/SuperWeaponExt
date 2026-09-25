@@ -23,6 +23,8 @@ jobs:
           ./st
           g++ -std=c++20 -Wall -Wextra -Werror -Isrc tests/money_test.cpp -o mt
           ./mt
+          g++ -std=c++20 -Wall -Wextra -Werror -Isrc tests/autofire_test.cpp -o af
+          ./af
 
   build:
     runs-on: windows-latest
