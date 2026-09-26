@@ -2,8 +2,9 @@
 
 **Implemented:** inhibitors and designators (enforced at launch *and* on the
 cursor, with growth/ratio range modifiers), dedicated per-superweapon hotkeys,
-and an owned paradrop with spawn-edge and formation control. Everything else in
-`FINDINGS.md` is not wired yet — see "Not implemented yet" below.
+an owned paradrop with spawn-edge and formation control, and **beacon
+placement** (`SWExt.Beacon.Spawns`) with `AutoFire.Target=beacon`. Everything
+else in `FINDINGS.md` is not wired yet — see "Not implemented yet" below.
 
 ## Why a separate `SWExt.*` namespace
 
@@ -942,7 +943,50 @@ first version of auto-fire reused the hotkey resolver, whose default mode is
 
 ---
 
-## `[SOMEBEACON]` — beacon type (DESIGN, not yet wired)
+## Beacon placement — IMPLEMENTED
+
+A beacon is an ordinary (usually invisible) techno placed by a superweapon.
+There is no separate placement command, and deliberately so: the superweapon
+already owns targeting, the network event, the recharge clock, the charge
+count and the sidebar cameo, so reusing it is more correct than rebuilding
+those. `Fire_SW` runs on every client with the same cell, which means the
+spawn is synced by construction — no custom event, and none of the desync
+exposure a locally-applied placement would carry.
+
+```ini
+[SOMESW]                          ; SuperWeaponType
+SWExt.Beacon.Spawns=              ; TechnoType to place at the target cell.
+                                  ;   Give it Invisible/Insignificant and no
+                                  ;   cell occupancy, or beacons block pathing
+                                  ;   and appear in scores.
+SWExt.Beacon.Lifetime=-1          ; frames before it expires; <0 = until killed
+SWExt.Beacon.Replace=true         ; remove this house's existing beacons of the
+                                  ;   same type first — "move my beacon" rather
+                                  ;   than litter the map
+```
+
+Because the beacon is a techno, it is already visible to everything that scans
+`TechnoClass::Array`:
+
+- weapons can target it,
+- `SWExt.Designators=` / `SWExt.Inhibitors=` see it with **no new code**,
+- Antares' `SW.Designators` and `SW.AITargetingType` see it too,
+- `SWExt.AutoFire.Target=beacon` aims at it.
+
+For a hotkey, give the placing superweapon `SWExt.HotkeyIndex=`; that registers
+a `CommandClass`, which CommandBarExt can surface as a bar button **by name**
+with no linkage between the two DLLs. Pair with `SW.ShowCameo=no` for a beacon
+with no sidebar presence at all.
+
+A placement onto an occupied or off-map cell is refused and logged; the object
+is freed rather than leaked.
+
+---
+
+## `[SOMEBEACON]` — richer beacon types (DESIGN, not yet wired)
+
+The tags below are the *further* design — per-beacon SW lists, unit responses
+and cooldowns. Placement above already works without them.
 
 A player-placed marker that superweapons and units react to. See
 `src/SW/Beacon.h` for the reasoning; the short version is that **the beacon is
