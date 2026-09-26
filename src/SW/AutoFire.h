@@ -51,6 +51,7 @@ namespace SWExt
         Trigger,    // where the superweapon that TRIGGERED us landed
         Cell,       // a fixed cell
         None,       // (0,0), for superweapons that ignore location
+        Beacon,     // one of the owner's beacon technos -- see BeaconTypes
     };
 
     struct AutoFireRule
@@ -60,6 +61,17 @@ namespace SWExt
         AutoFireTarget Target = AutoFireTarget::Base;
         int TargetCellX = 0;
         int TargetCellY = 0;
+
+        // For Target=Beacon: which TechnoTypes count as a beacon. Unified
+        // indices (TechnoTypeExt::UnifiedIndex), because infantry/unit/etc.
+        // each have their own array.
+        //
+        // Beacons are ordinary technos (see Beacon.h), so this resolves TODAY
+        // against any dummy type the modder spawns -- it does not wait on the
+        // beacon subsystem. Their POSITION is synced simulation state, which
+        // is what makes this a legal auto-fire target where Mouse and Screen
+        // are deliberately absent.
+        std::vector<int> BeaconTypes;
 
         // --- momentary: one of these superweapons fired ---
         bool OnSWFiredAny = false;                       // any superweapon at all

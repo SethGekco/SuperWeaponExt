@@ -897,8 +897,23 @@ confirmation already, before the per-subclass index bug was fixed.
 ## Auto-fire: where the shot lands, and an any-superweapon trigger
 
 ```ini
-SWExt.AutoFire.Target=base       ; base (default) | trigger | cell | none
+SWExt.AutoFire.Target=base       ; base (default) | trigger | cell | none |
+                                 ;   beacon
 SWExt.AutoFire.TargetCell=60,90  ; for Target=cell
+SWExt.AutoFire.BeaconTypes=      ; for Target=beacon — list of TechnoTypes that
+                                 ;   count as a beacon. Beacons are ordinary
+                                 ;   technos (see src/SW/Beacon.h), so this
+                                 ;   works with any dummy type today; it does
+                                 ;   not wait on the beacon subsystem.
+                                 ;   Resolves to the owner's lowest-array-index
+                                 ;   live, unlimboed match — array order is
+                                 ;   identical on every client, so the choice is
+                                 ;   deterministic.
+                                 ;   NO BEACON = NO SHOT. Unlike `trigger`,
+                                 ;   this never falls back to the base: doing so
+                                 ;   would drop an offensive superweapon on the
+                                 ;   owner's own base the moment their beacon
+                                 ;   died.
 SWExt.AutoFire.OnSWFired=any     ; any superweapon at all, instead of a list
 ```
 

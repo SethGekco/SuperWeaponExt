@@ -32,12 +32,15 @@
 #include "Body.h"
 
 #include <Ext/Techno/StandingOrders.h>
+#include <Ext/TechnoType/Body.h>   // UnifiedIndex, for Target=beacon
 
 #include <Fundamentals.h>
 #include <HouseClass.h>
 #include <HouseTypeClass.h>
 #include <SuperClass.h>
 #include <SuperWeaponTypeClass.h>
+#include <TechnoClass.h>
+#include <TechnoTypeClass.h>
 #include <Utilities/Debug.h>
 
 #include <vector>
@@ -113,6 +116,54 @@ namespace
             return pHouse->Available_Money();
         }
         return -1;
+    }
+
+    // Resolve AutoFireTarget::Beacon -> a cell. False when the house owns no
+    // matching beacon, which must SKIP the launch rather than fall back.
+    //
+    // Determinism: TechnoClass::Array order is identical on every client, so
+    // "lowest array index wins" gives every client the same beacon. Do not
+    // switch this to "nearest to X" without an explicit index tiebreak -- two
+    // beacons equidistant from X would otherwise resolve differently per
+    // client and desync the launch.
+    //
+    // Once Beacon.h's MaxActive lands this is usually a single candidate
+    // anyway; the rule exists so the multi-beacon case is defined, not lucky.
+    bool FindBeaconCell(const SWExt::AutoFireRule& rule, HouseClass* pOwner,
+                        CellStruct& out)
+    {
+        if (rule.BeaconTypes.empty() || !pOwner)
+            return false;
+
+        for (int i = 0; i < TechnoClass::Array.Count; ++i)
+        {
+            TechnoClass* const pTechno = TechnoClass::Array.GetItem(i);
+            if (!pTechno || pTechno->Owner != pOwner)
+                continue;
+
+            // A limboed beacon has no map presence at all -- garrisoned or
+            // riding a transport -- so it cannot be a target cell.
+            if (pTechno->InLimbo || !pTechno->IsAlive || !pTechno->Health)
+                continue;
+
+            TechnoTypeClass* const pType = pTechno->GetTechnoType();
+            if (!pType)
+                continue;
+
+            const int typeIndex = TechnoTypeExt::UnifiedIndex(pType);
+            bool match = false;
+            for (int wanted : rule.BeaconTypes)
+            {
+                if (wanted == typeIndex) { match = true; break; }
+            }
+            if (!match)
+                continue;
+
+            pTechno->GetMapCoords(&out);
+            return true;
+        }
+
+        return false;
     }
 }
 
@@ -274,6 +325,8 @@ void SWTypeExt::TickAutoFire()
             // own cursor position and desynced immediately. Auto-fire has its own
             // target enum with no local-input modes for exactly that reason.
             CellStruct cell{};
+            bool haveCell = true;
+
             switch (rule.Target)
             {
             case SWExt::AutoFireTarget::Trigger:
@@ -292,10 +345,26 @@ void SWTypeExt::TickAutoFire()
                 cell = CellStruct::Empty;
                 break;
 
+            case SWExt::AutoFireTarget::Beacon:
+                // Deliberately NOT falling back to the base like Trigger does.
+                // Trigger's fallback is harmless retaliation; this one would
+                // drop an offensive superweapon on the owner's OWN base the
+                // moment their beacon died. No beacon, no shot.
+                haveCell = FindBeaconCell(rule, pOwner, cell);
+                break;
+
             case SWExt::AutoFireTarget::Base:
             default:
                 cell = pOwner->GetBaseCenter();
                 break;
+            }
+
+            if (!haveCell)
+            {
+                // Quiet: with a recharged superweapon this is evaluated every
+                // frame, and "you have no beacon" is a normal resting state,
+                // not an error.
+                continue;
             }
 
             Debug::Log("[SuperWeaponExt] auto-fire %s for house %d (%s) at "

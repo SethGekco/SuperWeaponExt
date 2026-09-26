@@ -152,14 +152,33 @@ namespace
             else if (!_strcmpi(tgt, "trigger")) into.Target = T::Trigger;
             else if (!_strcmpi(tgt, "cell"))    into.Target = T::Cell;
             else if (!_strcmpi(tgt, "none"))    into.Target = T::None;
+            else if (!_strcmpi(tgt, "beacon"))  into.Target = T::Beacon;
             else
             {
                 Debug::Log("[SuperWeaponExt] [%s] SWExt.AutoFire.Target='%s' is not "
-                           "recognised (base/trigger/cell/none); using base. NOTE "
+                           "recognised (base/trigger/cell/none/beacon); using base. "
+                           "NOTE "
                            "mouse and screen are intentionally absent -- they are "
                            "local state and would desync an auto-fired launch\n",
                            section, tgt);
             }
+        }
+
+        // Which technos count as a beacon for Target=beacon.
+        for (auto const& tok : ReadList(pINI, section, "SWExt.AutoFire.BeaconTypes"))
+        {
+            if (auto const pType = TechnoTypeClass::Find(tok.c_str()))
+                into.BeaconTypes.push_back(TechnoTypeExt::UnifiedIndex(pType));
+            else
+                Debug::Log("[SuperWeaponExt] [%s] SWExt.AutoFire.BeaconTypes: "
+                           "unknown TechnoType '%s'\n", section, tok.c_str());
+        }
+
+        if (into.Target == SWExt::AutoFireTarget::Beacon && into.BeaconTypes.empty())
+        {
+            Debug::Log("[SuperWeaponExt] [%s] SWExt.AutoFire.Target=beacon but "
+                       "BeaconTypes is empty -- this rule can never fire\n",
+                       section);
         }
 
         // Positional, not "first non-zero wins" -- TargetCell=0,40 is a legal
