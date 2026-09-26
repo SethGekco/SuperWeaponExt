@@ -425,6 +425,24 @@ void SWTypeExt::ExtData::LoadFromINIFile(CCINIClass* pINI)
              SWExt::Relation::Owner, /*requirePower=*/false, this->Designators);
 
     // Dedicated hotkey slot. -1 (the default) means this SW claims none.
+    // --- beacon placement -------------------------------------------------
+    // The superweapon IS the placement mechanism. Targeting, the network
+    // event, the recharge clock, the sidebar cameo and the charge count are
+    // all already the superweapon's, so a beacon needs none of its own.
+    {
+        char tok[128] = {};
+        if (pINI->ReadString(section, "SWExt.Beacon.Spawns", "", tok, sizeof(tok)) > 0)
+        {
+            if (auto const pType = TechnoTypeClass::Find(tok))
+                this->BeaconSpawns = pType;
+            else
+                Debug::Log("[SuperWeaponExt] [%s] SWExt.Beacon.Spawns: unknown "
+                           "TechnoType '%s'\n", section, tok);
+        }
+    }
+    this->BeaconLifetime = pINI->ReadInteger(section, "SWExt.Beacon.Lifetime", -1);
+    this->BeaconReplace  = pINI->ReadBool(section, "SWExt.Beacon.Replace", true);
+
     this->HotkeyIndex = pINI->ReadInteger(section, "SWExt.HotkeyIndex", -1);
 
     if (this->HotkeyIndex >= SWExtHotkeySlots)

@@ -66,8 +66,15 @@
 #include <Utilities/Debug.h>
 #include <Utilities/Macro.h>
 
+#include <CellClass.h>
+#include <TechnoClass.h>
+#include <TechnoTypeClass.h>
+#include <Helpers/Cast.h>
+
 #include <cstdio>    // _snprintf_s
 #include <vector>
+
+#include "../../SW/BeaconPlacement.inc"
 
 namespace
 {
@@ -309,6 +316,10 @@ DEFINE_HOOK(0x4FAE50, HouseClass_Fire_SW_ConstraintVeto, 0x7)
     // Auto-fire: note that this launch happened, for rules watching it. Recorded
     // rather than acted on, so nothing fires from inside another launch.
     SWTypeExt::RecordLaunch(pThis, idxSW, *pCoords);
+
+    // Beacon placement. After the veto and readiness gates, so a refused or
+    // uncharged click places nothing.
+    PlaceBeacon(pExt, pThis, *pCoords);
 
     if (pExt->ParaDrop.Enabled
         && SWTypeExt::RunOwnedParaDrop(pSuper->Type, pThis, *pCoords))

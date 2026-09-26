@@ -385,3 +385,72 @@ void SWTypeExt::TickAutoFire()
     // Drained once per frame, after every rule has had a chance to see them.
     g_launches.clear();
 }
+
+// =============================================================================
+// Beacon lifetime
+//
+// Beacons placed with SWExt.Beacon.Lifetime expire on their own. Kept here
+// rather than in the launch file because expiry is a per-frame concern and the
+// frame tick already lives on this side.
+//
+// Pointer safety, same rule as everywhere else in this codebase: a dead
+// techno's memory is pooled and reused, so IsAlive cannot be trusted on a
+// pointer we merely remember. Validate by membership in TechnoClass::Array
+// before touching it.
+// =============================================================================
+
+namespace
+{
+    struct TrackedBeacon
+    {
+        TechnoClass* Beacon;
+        int ExpiryFrame;
+    };
+
+    std::vector<TrackedBeacon> g_beacons;
+}
+
+void SWTypeExt::RegisterBeacon(TechnoClass* pBeacon, int lifetime)
+{
+    if (!pBeacon || lifetime < 0)
+        return;   // no lifetime = lives until something kills it
+
+    g_beacons.push_back(
+        TrackedBeacon{ pBeacon, Unsorted::CurrentFrame + lifetime });
+}
+
+void SWTypeExt::TickBeacons()
+{
+    if (g_beacons.empty())
+        return;
+
+    const int now = Unsorted::CurrentFrame;
+
+    for (int i = static_cast<int>(g_beacons.size()) - 1; i >= 0; --i)
+    {
+        TechnoClass* const pBeacon = g_beacons[i].Beacon;
+
+        bool alive = false;
+        for (int k = 0; k < TechnoClass::Array.Count; ++k)
+        {
+            if (TechnoClass::Array.GetItem(k) == pBeacon) { alive = true; break; }
+        }
+
+        if (!alive)
+        {
+            // Already destroyed by other means; just stop tracking it.
+            g_beacons.erase(g_beacons.begin() + i);
+            continue;
+        }
+
+        if (now < g_beacons[i].ExpiryFrame)
+            continue;
+
+        Debug::Log("[SuperWeaponExt] beacon expired for house %d\n",
+                   pBeacon->Owner ? pBeacon->Owner->ArrayIndex : -1);
+
+        pBeacon->Limbo();
+        pBeacon->UnInit();
+        g_beacons.erase(g_beacons.begin() + i);
+    }
+}

@@ -105,6 +105,15 @@ public:
         // Fire automatically when a condition occurs. Inert unless configured.
         SWExt::AutoFireRule AutoFire;
 
+        // Beacon placement. The superweapon IS the placement mechanism -- see
+        // Hooks.Launch.cpp. <0 = this SW places no beacon.
+        // Pointer, not an index: TechnoTypes live for the process lifetime and
+        // this is resolved once at INI parse, so there is nothing to look up
+        // again at spawn time.
+        TechnoTypeClass* BeaconSpawns = nullptr;
+        int  BeaconLifetime = -1;  // frames, <0 = until killed
+        bool BeaconReplace = true; // remove this house's previous one first
+
         // Antares' own SW.AllowPlayer / SW.AllowAI, read here so our cross-house
         // grant honours them. We are READING the incumbent's tags to obey them,
         // not redefining them — a superweapon a house's own rules would refuse
@@ -275,6 +284,12 @@ public:
 
     // Per-frame evaluation, from the LogicClass::AI seat we already own.
     static void TickAutoFire();
+
+    // Expire beacons whose SWExt.Beacon.Lifetime has run out.
+    static void TickBeacons();
+
+    // Track a freshly placed beacon. lifetime < 0 = until killed.
+    static void RegisterBeacon(TechnoClass* pBeacon, int lifetime);
 
     // Ask for the cursor to be put back on `swIndex` next frame, after the
     // engine has finished deselecting it. Local-player only.
