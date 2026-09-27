@@ -963,7 +963,38 @@ SWExt.Beacon.Lifetime=-1          ; frames before it expires; <0 = until killed
 SWExt.Beacon.Replace=true         ; remove this house's existing beacons of the
                                   ;   same type first — "move my beacon" rather
                                   ;   than litter the map
+
+; --- unit response ---
+SWExt.Beacon.Range=5              ; cells the beacon reaches
+SWExt.Beacon.Units=               ; TechnoTypes that respond; empty = all of ours
+SWExt.Beacon.Response=none        ; none | inrangeonly | attackmove | aggressive
+SWExt.Beacon.UnitNoticeRange=-1   ; how far units notice it; <0 = Range
 ```
+
+### The three responses
+
+`Mission::Area_Guard` is the *engaging* mission — the one the engine uses for
+guard-area and attack-move — which is what makes these genuinely different
+rather than three names for one behaviour:
+
+| Mode | Destination | Who is re-tasked |
+|---|---|---|
+| `inrangeonly` | none — hold ground and engage | only units **already inside** `Range` |
+| `attackmove` | the beacon | only **idle** units within `UnitNoticeRange` |
+| `aggressive` | the beacon | **every** matching unit in range, busy or not |
+
+`inrangeonly` never drags anyone across the map; `attackmove` treats the beacon
+as a suggestion to whoever is free; `aggressive` lets the beacon outrank
+whatever a unit was already doing.
+
+Responses are evaluated every 15 frames, staggered by beacon index, so a map
+full of beacons never all evaluates on one frame and units are not re-ordered
+into a jitter.
+
+`SWExt.Beacon.BreakRangeLimits` from the design is **not implemented** —
+enforcing it means reaching into the weapon range checks, and a silently-inert
+key is worse than an absent one. Setting `Response` without `Spawns` logs a
+warning for the same reason.
 
 Because the beacon is a techno, it is already visible to everything that scans
 `TechnoClass::Array`:
