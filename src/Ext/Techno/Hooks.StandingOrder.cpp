@@ -37,6 +37,7 @@
  */
 #include "StandingOrders.h"
 
+#include <Ext/SWType/Body.h>      // ClearBeacons, on the same scenario reset
 #include <Ext/TechnoType/Body.h>
 
 #include <SW/StandingOrder.h>
@@ -243,6 +244,7 @@ void SWExt::StandingOrders::Tick()
     if (frame < s_lastFrame)
     {
         ClearImpacts();
+        SWTypeExt::ClearBeacons();   // same reset, same reasoning
         s_everChecked = false;
     }
     s_lastFrame = frame;

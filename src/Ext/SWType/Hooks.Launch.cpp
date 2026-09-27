@@ -319,7 +319,7 @@ DEFINE_HOOK(0x4FAE50, HouseClass_Fire_SW_ConstraintVeto, 0x7)
 
     // Beacon placement. After the veto and readiness gates, so a refused or
     // uncharged click places nothing.
-    PlaceBeacon(pExt, pThis, *pCoords);
+    PlaceBeacon(pExt, pThis, *pCoords, idxSW);
 
     if (pExt->ParaDrop.Enabled
         && SWTypeExt::RunOwnedParaDrop(pSuper->Type, pThis, *pCoords))

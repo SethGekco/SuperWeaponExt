@@ -10,6 +10,7 @@
 #include <SW/AutoFire.h>
 #include <SW/Money.h>
 #include <SW/Formation.h>
+#include <SW/Beacon.h>
 
 #include <GeneralStructures.h>   // CellStruct — SuperWeaponTypeClass.h does not pull it directly
 #include <SuperWeaponTypeClass.h>
@@ -113,6 +114,14 @@ public:
         TechnoTypeClass* BeaconSpawns = nullptr;
         int  BeaconLifetime = -1;  // frames, <0 = until killed
         bool BeaconReplace = true; // remove this house's previous one first
+        int  BeaconRange = 5;      // cells the beacon reaches
+
+        // Unit response. Inert unless Response is something other than None --
+        // an unconfigured beacon orders nobody anywhere.
+        std::vector<int> BeaconUnits;   // unified TechnoType indices; empty = all
+        SWExt::BeaconUnitResponse BeaconResponse =
+            SWExt::BeaconUnitResponse::None;
+        int BeaconNoticeRange = -1;     // <0 = BeaconRange
 
         // Antares' own SW.AllowPlayer / SW.AllowAI, read here so our cross-house
         // grant honours them. We are READING the incumbent's tags to obey them,
@@ -289,7 +298,12 @@ public:
     static void TickBeacons();
 
     // Track a freshly placed beacon. lifetime < 0 = until killed.
-    static void RegisterBeacon(TechnoClass* pBeacon, int lifetime);
+    static void RegisterBeacon(TechnoClass* pBeacon, int lifetime,
+                               int swTypeIndex);
+
+    // Forget every tracked beacon, so a new match does not inherit the
+    // previous one's list.
+    static void ClearBeacons();
 
     // Ask for the cursor to be put back on `swIndex` next frame, after the
     // engine has finished deselecting it. Local-player only.

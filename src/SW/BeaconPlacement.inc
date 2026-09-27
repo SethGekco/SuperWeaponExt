@@ -53,7 +53,7 @@ namespace
     }
 
     void PlaceBeacon(SWTypeExt::ExtData* pExt, HouseClass* pOwner,
-                     const CellStruct& cell)
+                     const CellStruct& cell, int swTypeIndex)
     {
         if (!pExt || !pExt->BeaconSpawns || !pOwner)
             return;
@@ -79,7 +79,7 @@ namespace
         }
 
         SWTypeExt::RegisterBeacon(abstract_cast<TechnoClass*>(pNew),
-                                  pExt->BeaconLifetime);
+                                  pExt->BeaconLifetime, swTypeIndex);
 
         Debug::Log("[SuperWeaponExt] beacon %s placed at (%d,%d) for house %d "
                    "(lifetime %d)\n", pType->ID, cell.X, cell.Y,

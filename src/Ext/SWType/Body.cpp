@@ -442,6 +442,44 @@ void SWTypeExt::ExtData::LoadFromINIFile(CCINIClass* pINI)
     }
     this->BeaconLifetime = pINI->ReadInteger(section, "SWExt.Beacon.Lifetime", -1);
     this->BeaconReplace  = pINI->ReadBool(section, "SWExt.Beacon.Replace", true);
+    this->BeaconRange    = pINI->ReadInteger(section, "SWExt.Beacon.Range", 5);
+    this->BeaconNoticeRange =
+        pINI->ReadInteger(section, "SWExt.Beacon.UnitNoticeRange", -1);
+
+    for (auto const& tok : ReadList(pINI, section, "SWExt.Beacon.Units"))
+    {
+        if (auto const pType = TechnoTypeClass::Find(tok.c_str()))
+            this->BeaconUnits.push_back(TechnoTypeExt::UnifiedIndex(pType));
+        else
+            Debug::Log("[SuperWeaponExt] [%s] SWExt.Beacon.Units: unknown "
+                       "TechnoType '%s'\n", section, tok.c_str());
+    }
+
+    {
+        char resp[64] = {};
+        if (pINI->ReadString(section, "SWExt.Beacon.Response", "", resp,
+                             sizeof(resp)) > 0)
+        {
+            using R = SWExt::BeaconUnitResponse;
+            if (!_strcmpi(resp, "none"))             this->BeaconResponse = R::None;
+            else if (!_strcmpi(resp, "inrangeonly")) this->BeaconResponse = R::InRangeOnly;
+            else if (!_strcmpi(resp, "attackmove"))  this->BeaconResponse = R::AttackMove;
+            else if (!_strcmpi(resp, "aggressive"))  this->BeaconResponse = R::Aggressive;
+            else
+                Debug::Log("[SuperWeaponExt] [%s] SWExt.Beacon.Response='%s' is "
+                           "not recognised (none/inrangeonly/attackmove/"
+                           "aggressive); nobody will respond\n", section, resp);
+        }
+    }
+
+    // A silently-inert key is worse than an absent one, so say so.
+    if (this->BeaconResponse != SWExt::BeaconUnitResponse::None
+        && !this->BeaconSpawns)
+    {
+        Debug::Log("[SuperWeaponExt] [%s] SWExt.Beacon.Response is set but "
+                   "SWExt.Beacon.Spawns is not -- there is no beacon to respond "
+                   "to\n", section);
+    }
 
     this->HotkeyIndex = pINI->ReadInteger(section, "SWExt.HotkeyIndex", -1);
 
