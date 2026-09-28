@@ -1072,3 +1072,41 @@ clients produce N launches. Both rules are spelled out in `src/SW/AutoFire.h`.
 Suggested companion: a new `AutoFireTarget::Beacon` mode, so an existing
 auto-fire rule can aim at a beacon instead of a base centre. Beacon positions
 are synced, so that is legal where `Mouse`/`Screen` deliberately are not.
+
+---
+
+## Beacon test content (live in Rex's rulesmd, 2026-09-27)
+
+A working end-to-end setup, appended to `rulesmd.ini` (backup:
+`rulesmd.ini.bak-prebeacon-20260926`). Deliberately VISIBLE — a production
+beacon would be invisible; this one is a normal-looking unit so placement,
+following and expiry can be watched rather than inferred from the log.
+
+| Section | Role |
+|---|---|
+| `[CBEBEACON]` | the beacon: an InfantryType, `Immune`, `Insignificant`, registered as `DE0002=` in the real `[InfantryTypes]` list |
+| `[CBEBeaconPlaceSpecial]` | places it. `Type=GenericWarhead` (Antares) with the inert `CBEProbeWH`, so the SW itself does nothing and only our tag has an effect |
+| `[CBEBeaconStrikeSpecial]` | `SWExt.Designators=CBEBEACON`, range 6 — may only fire near a beacon |
+
+Both SWs are granted from **all three Construction Yards** using Antares'
+**additive** `SuperWeapons=` list, so no existing `SuperWeapon=` is clobbered
+and the test works whichever side is played. Both have `RechargeTime=.25`
+(~15s) so testing is not a waiting game, and `SW.AITargetingType=NoTarget` so
+the AI does not fire them at random.
+
+Hotkeys: `SWExt.HotkeyIndex=0` (place) and `=1` (strike), bindable under
+Interface. Those are registered CommandClasses, so CommandBarExt can surface
+either as a bar button by name.
+
+**What each result proves**
+
+- beacon appears at the clicked cell → placement + `Fire_SW` spawn path
+- firing again moves it → `Replace`
+- it vanishes after ~60s → `Lifetime` and the reaper
+- your units walk to it → `Response=attackmove` (`Mission::Area_Guard` +
+  destination), with `UnitNoticeRange=25`
+- **Beacon Strike refuses away from the beacon and works near it →
+  designators see a beacon with no new code**, which is the whole architectural
+  claim
+- pointing an existing SW's `SWExt.AutoFire.Target=beacon` at `CBEBEACON`
+  → auto-fire aiming at a beacon
