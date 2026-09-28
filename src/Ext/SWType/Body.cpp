@@ -481,6 +481,25 @@ void SWTypeExt::ExtData::LoadFromINIFile(CCINIClass* pINI)
                    "to\n", section);
     }
 
+    // Parse-time confirmation, matching the inhibitor/designator lines below.
+    //
+    // This exists because of a real debugging session: a beacon superweapon
+    // whose [SuperWeaponTypes] index COLLIDED with an already-claimed index
+    // was never created at all, so nothing beacon-related ever logged and the
+    // symptom was simply "I see explosions, not beacons". A line here says
+    // "this superweapon exists AND carries beacon config", which separates
+    // "the SW does not exist" from "the SW exists but placement failed" at a
+    // glance.
+    if (this->BeaconSpawns)
+    {
+        Debug::Log("[SuperWeaponExt] [%s] places beacon %s: lifetime %d, "
+                   "range %d, replace %d, response %d, %d unit type(s)\n",
+                   section, this->BeaconSpawns->ID, this->BeaconLifetime,
+                   this->BeaconRange, this->BeaconReplace ? 1 : 0,
+                   static_cast<int>(this->BeaconResponse),
+                   static_cast<int>(this->BeaconUnits.size()));
+    }
+
     this->HotkeyIndex = pINI->ReadInteger(section, "SWExt.HotkeyIndex", -1);
 
     if (this->HotkeyIndex >= SWExtHotkeySlots)
