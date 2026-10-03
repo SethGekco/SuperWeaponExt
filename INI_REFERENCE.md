@@ -602,6 +602,25 @@ The `swimpact` blackboard is not written into the savegame. After loading a save
 superweapon fires. Every client loads it empty, so this cannot desync — it is a
 behavioural gap, not a correctness bug.
 
+### ⚠ `SWExt.ParadropRadius` is per AIRCRAFT TYPE — it affects everyone
+
+Because it lives on the AircraftType, it applies to **every** paradrop that uses
+that plane: vanilla `ParaDropSpecial`, Antares drops, AI drops, and any other
+superweapon sharing the type. It is not scoped to the superweapon you were
+thinking about when you set it.
+
+**Setting it BELOW `[General]ParadropRadius` can stop planes dropping at all.**
+The engine default is `1024` (4 cells). A plane only drops on a frame where its
+distance to the target is inside the radius, so a small window plus a fast plane
+means the step can jump straight over it — the plane then circles or hovers
+indefinitely. Observed in testing with `512` (2 cells) against a `Speed=30`
+plane: drops became intermittent, reported as "paradrop planes sometimes hover
+in place".
+
+Rule of thumb: do not go below `1024` unless you have also slowed the plane. If
+you want a tighter window for **one** superweapon, use the per-superweapon key
+below instead — that is what it is for.
+
 ### Drop radius, per superweapon
 
 `SWExt.ParadropRadius=` on an **AircraftType** sets how close a plane must get to
