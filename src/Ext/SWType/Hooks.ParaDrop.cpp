@@ -51,6 +51,7 @@
 #include <HouseClass.h>
 #include <HouseTypeClass.h>   // Type->ID, to name the firing country in the log
 #include <MapClass.h>
+#include <ObjectClass.h>    // abstract_cast target for the paradrop terrain survey
 #include <RulesClass.h>   // RulesClass::Instance->ParadropRadius
 #include <TechnoTypeClass.h>
 #include <Unsorted.h>       // Unsorted::ScenarioInit
@@ -559,6 +560,24 @@ namespace
         return raw;
     }
 
+    // One survey line per plane, ever. Bounded so a long match cannot grow it
+    // without limit; oldest entries fall off and at worst a plane is surveyed
+    // twice, which is harmless for a diagnostic.
+    bool AlreadySurveyed(AircraftClass* pPlane)
+    {
+        static std::vector<AircraftClass*> s_seen;
+
+        for (auto const* e : s_seen)
+            if (e == pPlane)
+                return true;
+
+        s_seen.push_back(pPlane);
+        if (s_seen.size() > 256)
+            s_seen.erase(s_seen.begin());
+
+        return false;
+    }
+
     // Shared decision for the paradrop test site.
     //
     // Precedence, most specific first:
@@ -583,6 +602,56 @@ namespace
         }
 
         const bool drop = distance <= radius;
+
+        // ---------------------------------------------------------------------
+        // DIAGNOSTIC: why is a plane hovering instead of releasing?
+        //
+        // Reported symptom: planes hover EXACTLY where they should release. That
+        // is a different failure from overshooting the window -- the plane
+        // arrives, our test says yes, and AircraftClass::Paradrop (0x415C60,
+        // reached via 0x4159C8) then fails to place anybody, so nothing advances
+        // and the plane holds position.
+        //
+        // This hook runs for EVERY paradrop plane in the game, vanilla included,
+        // so the question is answerable from one ordinary run instead of cycling
+        // DLLs in and out of the injection list.
+        //
+        //   drop=1 -> release was authorised; a hover after this is downstream in
+        //             Paradrop(), and targetLand says whether terrain is why
+        //   drop=0 -> never satisfied the radius; an entirely different problem
+        //
+        // Infantry cannot be placed on Water or Rock, which is the cliff theory
+        // in testable form.
+        // ---------------------------------------------------------------------
+        if (pPlane && !AlreadySurveyed(pPlane))
+        {
+            const char* landName = "none";
+            int landVal = -1, level = -1, bridge = -1;
+
+            if (auto const pTarget = abstract_cast<ObjectClass*>(pPlane->Target))
+            {
+                const auto cell = CellClass::Coord2Cell(pTarget->GetCoords());
+                if (auto const pCell = MapClass::Instance.TryGetCellAt(cell))
+                {
+                    landVal = static_cast<int>(pCell->LandType);
+                    level   = pCell->Level;
+                    bridge  = pCell->ContainsBridge() ? 1 : 0;
+
+                    static const char* const kLand[] = {
+                        "Clear", "Road", "Water", "Rock", "Wall",
+                        "Tiberium", "Beach", "Rough", "Ice", "Railroad" };
+
+                    if (landVal >= 0 && landVal < 10)
+                        landName = kLand[landVal];
+                }
+            }
+
+            Debug::Log("[SuperWeaponExt] paradrop plane %s: drop=%d dist=%d "
+                       "radius=%d (%s) targetLand=%d(%s) level=%d bridge=%d\n",
+                       pPlane->Type ? pPlane->Type->ID : "?",
+                       drop ? 1 : 0, distance, radius, source,
+                       landVal, landName, level, bridge);
+        }
 
         // One line per plane, the first time it actually starts dropping. Says
         // WHICH level of the precedence chain won, because the configured value
