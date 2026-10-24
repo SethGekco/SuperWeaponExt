@@ -25,6 +25,8 @@ jobs:
           ./mt
           g++ -std=c++20 -Wall -Wextra -Werror -Isrc tests/autofire_test.cpp -o af
           ./af
+          g++ -std=c++20 -Wall -Wextra -Werror -Isrc tests/targetscatter_test.cpp -o ts
+          ./ts
 
   build:
     runs-on: windows-latest

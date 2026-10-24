@@ -11,6 +11,7 @@
 #include <SW/Money.h>
 #include <SW/Formation.h>
 #include <SW/Beacon.h>
+#include <SW/TargetScatter.h>
 
 #include <GeneralStructures.h>   // CellStruct — SuperWeaponTypeClass.h does not pull it directly
 #include <SuperWeaponTypeClass.h>
@@ -105,6 +106,20 @@ public:
 
         // Fire automatically when a condition occurs. Inert unless configured.
         SWExt::AutoFireRule AutoFire;
+
+        // Scatter the AI-chosen target by a few cells. Inert unless configured.
+        SWExt::ScatterRule Scatter;
+
+        // Mirrors of two ANTARES keys, read from the same section so we can tell
+        // whether a launch's cell came from AI targeting or from a player's own
+        // click. We do not redefine either; we read them to scope our scatter
+        // the way its name promises.
+        //
+        // ⚠ Why a mirror and not Antares' parsed value: Antares' SWTypeExt lives
+        // in Antares.dll and is not reachable from here. The INI is, and it is
+        // the same source of truth both DLLs parse.
+        bool Antares_UseAITargeting = false;
+        bool Antares_AutoFire       = false;
 
         // Beacon placement. The superweapon IS the placement mechanism -- see
         // Hooks.Launch.cpp. <0 = this SW places no beacon.
@@ -285,6 +300,21 @@ public:
     static void TickPendingParaDrops();
 
     // --- auto-fire (Hooks.AutoFire.cpp) ---
+
+    // Marks a launch as coming from SWExt.AutoFire rather than from a player
+    // aiming. Only the AI-targeting scatter looks at it, to decide whether a
+    // cell was chosen by targeting or by a human.
+    //
+    // Scoped rather than a bare setter so an early return inside the launch
+    // cannot leave the flag stuck on for the next, manual, shot.
+    struct AutoFireLaunchScope
+    {
+        AutoFireLaunchScope();
+        ~AutoFireLaunchScope();
+
+        AutoFireLaunchScope(const AutoFireLaunchScope&) = delete;
+        AutoFireLaunchScope& operator=(const AutoFireLaunchScope&) = delete;
+    };
 
     // Record that `pHouse` launched `swIndex` this frame. Called from the
     // Fire_SW hook, the one place every launch in the game passes through.

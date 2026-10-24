@@ -119,6 +119,77 @@ namespace
                          std::vector<int>& into);
 
     // Auto-fire conditions. See SW/AutoFire.h for the momentary-vs-level split.
+    // One `min,max` band, in cells.
+    //
+    // Canonical key is SWExt.-prefixed like every other tag this DLL owns; the
+    // SW.-prefixed spelling is accepted as an alias because that is the name
+    // the feature was asked for, as a companion to Antares' SW.AITargeting.
+    //
+    // ⚠ The alias sits in ANTARES' namespace. If a future Antares claims
+    // SW.AITargeting.RandomX itself, both DLLs will read the same key and both
+    // will act on it. The SWExt. spelling is the one that cannot collide, and
+    // it wins when both are present.
+    void ReadScatterBand(CCINIClass* pINI, const char* section, const char* key,
+                         int& outMin, int& outMax)
+    {
+        auto const tokens = ReadList(pINI, section, key);
+        if (tokens.empty())
+            return;
+
+        // Positional, so `0,6` keeps its zero minimum instead of collapsing.
+        int axis = 0;
+        for (auto const& tok : tokens)
+        {
+            if (axis == 0)      outMin = std::atoi(tok.c_str());
+            else if (axis == 1) outMax = std::atoi(tok.c_str());
+            ++axis;
+        }
+
+        if (axis == 1)
+        {
+            // A single number is a symmetric band: `4` means -4..4. Cheap to
+            // support and the shape a modder is most likely to try first.
+            outMax = outMin < 0 ? -outMin : outMin;
+            outMin = -outMax;
+        }
+        else if (axis > 2)
+        {
+            Debug::Log("[SuperWeaponExt] [%s] %s takes min,max -- extra values "
+                       "ignored\n", section, key);
+        }
+    }
+
+    void ReadScatter(CCINIClass* pINI, const char* section,
+                     SWExt::ScatterRule& into)
+    {
+        ReadScatterBand(pINI, section, "SW.AITargeting.RandomX",
+                        into.MinX, into.MaxX);
+        ReadScatterBand(pINI, section, "SWExt.AITargeting.RandomX",
+                        into.MinX, into.MaxX);
+
+        ReadScatterBand(pINI, section, "SW.AITargeting.RandomY",
+                        into.MinY, into.MaxY);
+        ReadScatterBand(pINI, section, "SWExt.AITargeting.RandomY",
+                        into.MinY, into.MaxY);
+
+        into.Normalise();
+
+        if (into.SwappedX || into.SwappedY)
+        {
+            Debug::Log("[SuperWeaponExt] [%s] AITargeting.Random%s given as "
+                       "max,min; reading it the other way round\n", section,
+                       into.SwappedX && into.SwappedY ? "X and Y"
+                                                      : (into.SwappedX ? "X" : "Y"));
+        }
+
+        if (into.Active())
+        {
+            Debug::Log("[SuperWeaponExt] [%s] AI-targeting scatter: X %d..%d, "
+                       "Y %d..%d cells\n", section,
+                       into.MinX, into.MaxX, into.MinY, into.MaxY);
+        }
+    }
+
     void ReadAutoFire(CCINIClass* pINI, const char* section, SWExt::AutoFireRule& into)
     {
         into.Enabled = pINI->ReadBool(section, "SWExt.AutoFire", false);
@@ -570,6 +641,13 @@ void SWTypeExt::ExtData::LoadFromINIFile(CCINIClass* pINI)
     // Antares' tags, honoured rather than redefined (see Body.h).
     this->AllowPlayer = pINI->ReadBool(section, "SW.AllowPlayer", true);
     this->AllowAI     = pINI->ReadBool(section, "SW.AllowAI", true);
+
+    this->Antares_UseAITargeting =
+        pINI->ReadBool(section, "SW.UseAITargeting", false);
+    this->Antares_AutoFire = pINI->ReadBool(section, "SW.AutoFire", false);
+
+    this->Scatter = SWExt::ScatterRule{};
+    ReadScatter(pINI, section, this->Scatter);
 
     this->ParaDrop.Enabled = pINI->ReadBool(section, "SWExt.ParaDrop", false);
 

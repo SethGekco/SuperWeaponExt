@@ -1129,3 +1129,115 @@ either as a bar button by name.
   claim
 - pointing an existing SW's `SWExt.AutoFire.Target=beacon` at `CBEBEACON`
   → auto-fire aiming at a beacon
+
+---
+
+## AI-targeting scatter — stop a targeted superweapon hitting the same tile
+
+Antares' `SW.AITargeting=` is **exact**. `Base` means the base centre, every
+launch, forever. For a superweapon that destroys things that hardly matters; for
+one that *delivers* something — a building, a paradrop, a structure-planting
+effect — it means every launch of the match lands on the same tile, which reads
+as mechanical and is trivially predictable.
+
+```ini
+[SOMESW]
+SW.AITargeting=Base
+SWExt.AITargeting.RandomX=-4,4     ; shift up to 4 cells left or right
+SWExt.AITargeting.RandomY=-4,4     ; ...and up to 4 cells up or down
+```
+
+| Key | Default | Meaning |
+|---|---|---|
+| `SWExt.AITargeting.RandomX` | `0,0` | `min,max` horizontal shift, **in cells**, inclusive and signed |
+| `SWExt.AITargeting.RandomY` | `0,0` | the same on the vertical axis |
+
+`0,0` — the default — is exactly the old behaviour and costs nothing: the
+superweapon is skipped before any work is done.
+
+### Shapes the bands can take
+
+- `-4,4` — symmetric jitter, the usual case.
+- `4` — a single number is shorthand for `-4,4`.
+- `2,6` — **one-sided**. Always shifts right by two to six cells; the target is
+  never where targeting put it. Useful for "land beside the base, not on it".
+- `0,6` — zero to six cells right, so "unchanged" is one of the outcomes.
+- `4,-4` — a reversed band is read as `-4,4` and says so once in the log.
+
+The axes are independent: setting only `RandomX` leaves the Y coordinate alone.
+
+### Which launches are scattered
+
+Only launches whose cell came from **targeting**, never a cell a human aimed.
+That is what the name promises, and it is the useful scoping: a player who
+clicks a tile expects the shot to land on that tile.
+
+A launch is treated as targeted when any of these hold:
+
+| Condition | Why |
+|---|---|
+| the firing house is AI-controlled | all its launches go through Antares' `TryFire` |
+| `SW.UseAITargeting=yes` | Antares routes the player's click through `TryFire` too |
+| `SW.AutoFire=yes` | Antares' auto-fire tick fires it through `TryFire` |
+| `SWExt.AutoFire=yes` fired this shot | our own auto-fire chose the cell, not a player |
+
+> ⚠ **One imprecision, stated plainly.** A *human* house with `SW.AutoFire=yes`
+> who manually clicks the superweapon is scattered as though it were targeted.
+> In practice the auto-fire tick launches it the frame it finishes charging, so
+> there is no window to click in — but `HouseClass::Fire_SW` carries no signal
+> that distinguishes its callers, so this is an approximation, not a proof.
+
+### The scattered cell is the real cell
+
+Everything downstream sees the shifted cell: inhibitor and designator
+constraints, `SWExt.ParaDrop`, beacon placement, and the engine's own launch.
+In particular **an inhibitor is checked against where the shot actually lands**,
+not where targeting aimed it, so a scatter can push a shot into an inhibited
+area and have it refused. That is correct — the protection is of a place, not of
+an intention — but it means a large scatter near a defended base will see more
+refusals.
+
+### Map edges
+
+The shifted cell is clamped into the map bounds, so a superweapon aimed near the
+edge still scatters, just not off the map. If even the clamped cell is not a
+legal cell the **unshifted** cell is used — targeting produced it, so it is
+known good. Both outcomes are logged.
+
+### `SW.`-prefixed alias
+
+`SW.AITargeting.RandomX` / `SW.AITargeting.RandomY` are accepted as aliases, as
+the natural companions to `SW.AITargeting`. The `SWExt.` spelling is canonical
+and wins if both are present.
+
+> ⚠ The alias lives in **Antares' namespace**. If a future Antares claims that
+> exact key, both DLLs will read it and both will act on it. The `SWExt.`
+> spelling cannot collide; prefer it.
+
+### Determinism
+
+The offsets come from `ScenarioClass::Instance->Random` — the in-match synced
+generator Antares itself uses for `LightningRandom` — never `Randomizer::Global`,
+which YRpp documents as being for the map generator and other randomness outside
+a match.
+
+Every client evaluates the same launch on the same frame from the same synced
+inputs, and draws **both** values in X-then-Y order whenever the rule is active,
+including when a band is `0,0`. That last part is not an optimisation that was
+missed: a client that skipped a draw another client made would leave the two
+generators out of step and desync the whole match from that point, which is far
+worse than a wrongly-aimed shot.
+
+### What the log says
+
+```
+[SuperWeaponExt] [SOMESW] AI-targeting scatter: X -4..4, Y -4..4 cells
+[SuperWeaponExt] SOMESW house 2: AI target (64,72) scattered by (+3,-1) to (67,71)
+```
+
+and, when the map got in the way:
+
+```
+[SuperWeaponExt] SOMESW house 2: AI target (3,72) scattered by (-4,+2) to (0,74) [clamped to map]
+[SuperWeaponExt] SOMESW scatter (3,72) -> (-1,74) is not a legal cell; keeping the targeted cell
+```

@@ -67,6 +67,8 @@
 #include <Utilities/Macro.h>
 
 #include <CellClass.h>
+#include <MapClass.h>        // MapCoordBounds / CoordinatesLegal, for the scatter
+#include <ScenarioClass.h>   // the SYNCED in-match RNG
 #include <TechnoClass.h>
 #include <TechnoTypeClass.h>
 #include <Helpers/Cast.h>
@@ -78,6 +80,105 @@
 
 namespace
 {
+    // =========================================================================
+    // AI-TARGETING SCATTER
+    //
+    // Antares' SW.AITargeting picks an EXACT cell -- `Base` is the base centre,
+    // every launch, forever. SWExt.AITargeting.RandomX/Y jitter that by a few
+    // cells so a superweapon that delivers something somewhere stops delivering
+    // it to the same tile every time. See SW/TargetScatter.h for the core.
+    // =========================================================================
+
+    // Set while OUR OWN SWExt.AutoFire issues a launch, so the scatter can tell
+    // that shot apart from a player's click. Plain bool, not atomic: the game
+    // simulation is single-threaded and this is set and cleared around one
+    // call.
+    bool g_firingFromAutoFire = false;
+
+    // Did this launch's cell come from targeting rather than from a human
+    // aiming it?
+    //
+    // ⚠ Every input here is SYNCED state. IsControlledByHuman is a house
+    // property; the two Antares mirrors are parsed config. Nothing consults
+    // HouseClass::CurrentPlayer, the mouse or the local view -- this predicate
+    // decides whether to draw from the shared RNG, so a client that answered it
+    // differently would desync the whole match, not merely aim differently.
+    //
+    // The mapping onto Antares' own routing (Hooks.Targeting.cpp):
+    //   - AI house                -> HouseClass_Update_AI_TryFireSW -> TryFire
+    //   - SW.AutoFire on a human  -> same tick, same TryFire
+    //   - SW.UseAITargeting       -> RespondToEvent(SpecialPlace) -> TryFire
+    //   - anything else by a human-> RespondToEvent -> Fire_SW with the click
+    // so these three flags are exactly the set of launches that went through
+    // PickSuperWeaponTarget.
+    //
+    // ⚠ KNOWN IMPRECISION: a human house with SW.AutoFire=yes who somehow
+    // clicks the superweapon manually is treated as AI-targeted and scattered.
+    // In practice the auto-fire tick launches it the frame it charges, so the
+    // window does not exist -- but it is an approximation, not a proof, and
+    // there is no signal at Fire_SW that distinguishes the two callers.
+    bool CameFromAITargeting(const SWTypeExt::ExtData* pExt, HouseClass* pHouse)
+    {
+        return g_firingFromAutoFire
+            || pExt->Antares_UseAITargeting
+            || pExt->Antares_AutoFire
+            || !pHouse->IsControlledByHuman();
+    }
+
+    // Move the target cell, in place, before anything downstream reads it.
+    //
+    // ⚠ TWO DRAWS, ALWAYS, IN THIS ORDER. Never skip the Y draw because its
+    // band is 0,0: every client must consume the same number of values from
+    // ScenarioClass::Instance->Random or their generators diverge and the match
+    // desyncs from that point. The band is applied to the drawn value inside
+    // ApplyScatter, not by deciding whether to draw.
+    //
+    // ⚠ ScenarioClass::Instance->Random, never Randomizer::Global -- YRpp's own
+    // header says the global one is for the map generator and other randomness
+    // OUTSIDE a match. It is not replicated.
+    void ApplyAITargetScatter(const SWTypeExt::ExtData* pExt, HouseClass* pHouse,
+                              SuperWeaponTypeClass* pType, CellStruct& cell)
+    {
+        if (!pExt->Scatter.Active() || !CameFromAITargeting(pExt, pHouse))
+            return;
+
+        auto& random = ScenarioClass::Instance->Random;
+        const int rollX = random.RandomRanged(pExt->Scatter.MinX, pExt->Scatter.MaxX);
+        const int rollY = random.RandomRanged(pExt->Scatter.MinY, pExt->Scatter.MaxY);
+
+        auto const& bounds = MapClass::Instance.MapCoordBounds;
+        const SWExt::ScatterBounds limits{
+            bounds.Left, bounds.Top, bounds.Right, bounds.Bottom };
+
+        auto const result = SWExt::ApplyScatter(
+            pExt->Scatter, cell.X, cell.Y, rollX, rollY, limits);
+
+        if (!result.Shifted)
+            return;
+
+        const CellStruct shifted{ static_cast<short>(result.X),
+                                  static_cast<short>(result.Y) };
+
+        // The unshifted cell is known good -- targeting produced it. If the
+        // scatter lands somewhere the map will not accept, keep the original
+        // rather than firing into nothing. Deterministic either way: every
+        // client reaches the same verdict from the same cell.
+        if (!MapClass::Instance.CoordinatesLegal(shifted))
+        {
+            Debug::Log("[SuperWeaponExt] %s scatter (%d,%d) -> (%d,%d) is not a "
+                       "legal cell; keeping the targeted cell\n",
+                       pType->ID, cell.X, cell.Y, shifted.X, shifted.Y);
+            return;
+        }
+
+        Debug::Log("[SuperWeaponExt] %s house %d: AI target (%d,%d) scattered by "
+                   "(%+d,%+d) to (%d,%d)%s\n",
+                   pType->ID, pHouse->ArrayIndex, cell.X, cell.Y, rollX, rollY,
+                   shifted.X, shifted.Y, result.Clamped ? " [clamped to map]" : "");
+
+        cell = shifted;
+    }
+
     // Denial-log throttle: one line per (house, superweapon) per ~30s.
     //
     // A broke AI retries a superweapon it cannot afford on almost every pass.
@@ -131,6 +232,16 @@ namespace
     }
 }
 
+SWTypeExt::AutoFireLaunchScope::AutoFireLaunchScope()
+{
+    g_firingFromAutoFire = true;
+}
+
+SWTypeExt::AutoFireLaunchScope::~AutoFireLaunchScope()
+{
+    g_firingFromAutoFire = false;
+}
+
 DEFINE_HOOK(0x4FAE50, HouseClass_Fire_SW_ConstraintVeto, 0x7)
 {
     enum { Continue = 0, Deny = 0x4FAEF3 };
@@ -153,10 +264,25 @@ DEFINE_HOOK(0x4FAE50, HouseClass_Fire_SW_ConstraintVeto, 0x7)
     if (!pExt || (!pExt->IsConfigured()
                   && !pExt->ParaDrop.Enabled
                   && !pExt->KeepSelectedAfterFire
-                  && !pExt->Money.Active()))
+                  && !pExt->Money.Active()
+                  && !pExt->Scatter.Active()))
     {
         return Continue;
     }
+
+    // FIRST, before anything else reads the cell.
+    //
+    // Mutating *pCoords rather than a copy is deliberate: everything downstream
+    // -- the inhibitor veto, our owned paradrop, the beacon placement and the
+    // engine's own launch -- takes the cell from this pointer, and they must all
+    // agree on where the shot actually lands. In particular the constraint check
+    // below is deliberately evaluated against the SCATTERED cell, because that
+    // is the cell an inhibitor would really be protecting.
+    //
+    // The caller's storage is dead after this call at all 17 call sites (each
+    // one picks a cell, fires, and discards it), and every client performs the
+    // identical mutation.
+    ApplyAITargetScatter(pExt, pThis, pSuper->Type, *pCoords);
 
 
     if (pExt->IsConfigured() && !pExt->AllowsFireAt(pThis, *pCoords))
