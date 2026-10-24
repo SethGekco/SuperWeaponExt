@@ -120,15 +120,6 @@ namespace
 
     // Auto-fire conditions. See SW/AutoFire.h for the momentary-vs-level split.
     // One `min,max` band, in cells.
-    //
-    // Canonical key is SWExt.-prefixed like every other tag this DLL owns; the
-    // SW.-prefixed spelling is accepted as an alias because that is the name
-    // the feature was asked for, as a companion to Antares' SW.AITargeting.
-    //
-    // ⚠ The alias sits in ANTARES' namespace. If a future Antares claims
-    // SW.AITargeting.RandomX itself, both DLLs will read the same key and both
-    // will act on it. The SWExt. spelling is the one that cannot collide, and
-    // it wins when both are present.
     void ReadScatterBand(CCINIClass* pINI, const char* section, const char* key,
                          int& outMin, int& outMax)
     {
@@ -159,35 +150,87 @@ namespace
         }
     }
 
-    void ReadScatter(CCINIClass* pINI, const char* section,
-                     SWExt::ScatterRule& into)
+    // `AITargeting.<name>` for the AI side, `AITargeting.<name>.Human` for the
+    // human side. The suffix rule is uniform across every key in this family,
+    // and an absent `.Human` key inherits whatever the AI side resolved to.
+    void ReadScatterSide(CCINIClass* pINI, const char* section,
+                         const char* suffix, SWExt::ScatterSide& into)
     {
-        ReadScatterBand(pINI, section, "SW.AITargeting.RandomX",
-                        into.MinX, into.MaxX);
-        ReadScatterBand(pINI, section, "SWExt.AITargeting.RandomX",
-                        into.MinX, into.MaxX);
+        char key[128] = {};
 
-        ReadScatterBand(pINI, section, "SW.AITargeting.RandomY",
-                        into.MinY, into.MaxY);
-        ReadScatterBand(pINI, section, "SWExt.AITargeting.RandomY",
-                        into.MinY, into.MaxY);
-
-        into.Normalise();
-
-        if (into.SwappedX || into.SwappedY)
+        auto const band = [&](const char* name, int& lo, int& hi)
         {
-            Debug::Log("[SuperWeaponExt] [%s] AITargeting.Random%s given as "
-                       "max,min; reading it the other way round\n", section,
-                       into.SwappedX && into.SwappedY ? "X and Y"
-                                                      : (into.SwappedX ? "X" : "Y"));
-        }
+            _snprintf_s(key, sizeof(key), "AITargeting.%s%s", name, suffix);
+            ReadScatterBand(pINI, section, key, lo, hi);
+        };
 
-        if (into.Active())
+        auto const flag = [&](const char* name, bool& out)
         {
-            Debug::Log("[SuperWeaponExt] [%s] AI-targeting scatter: X %d..%d, "
-                       "Y %d..%d cells\n", section,
-                       into.MinX, into.MaxX, into.MinY, into.MaxY);
-        }
+            _snprintf_s(key, sizeof(key), "AITargeting.%s%s", name, suffix);
+            out = pINI->ReadBool(section, key, out);
+        };
+
+        band("RandomX", into.Band.MinX, into.Band.MaxX);
+        band("RandomY", into.Band.MinY, into.Band.MaxY);
+
+        flag("TargetRequireDesignator", into.Checks.TargetRequireDesignator);
+        flag("TargetAvoidInhibitors",   into.Checks.TargetAvoidInhibitors);
+        flag("RandomRequireDesignator", into.Checks.RandomRequireDesignator);
+        flag("RandomAvoidInhibitors",   into.Checks.RandomAvoidInhibitors);
+
+        into.Band.Normalise();
+    }
+
+    void ReadScatter(CCINIClass* pINI, const char* section,
+                     SWExt::ScatterConfig& into)
+    {
+        ReadScatterSide(pINI, section, "", into.AI);
+
+        // ⚠ Human STARTS as a copy of the resolved AI side, so every key it
+        // does not override inherits -- bands and check flags alike. Reading
+        // it from defaults instead would make `.Human` mean "revert to the
+        // built-in default", which is not what inheriting means.
+        into.Human = into.AI;
+        into.Human.Band.SwappedX = false;
+        into.Human.Band.SwappedY = false;
+        ReadScatterSide(pINI, section, ".Human", into.Human);
+
+        auto const warnSwap = [&](const SWExt::ScatterBand& b, const char* who)
+        {
+            if (b.SwappedX || b.SwappedY)
+            {
+                Debug::Log("[SuperWeaponExt] [%s] AITargeting.Random%s%s given "
+                           "as max,min; reading it the other way round\n",
+                           section,
+                           b.SwappedX && b.SwappedY ? "X and Y"
+                                                    : (b.SwappedX ? "X" : "Y"),
+                           who);
+            }
+        };
+
+        warnSwap(into.AI.Band, "");
+        warnSwap(into.Human.Band, ".Human");
+
+        if (!into.Active())
+            return;
+
+        auto const describe = [&](const SWExt::ScatterSide& side, const char* who)
+        {
+            Debug::Log("[SuperWeaponExt] [%s] %s scatter: X %d..%d, Y %d..%d "
+                       "cells; aim point needs designator %d / avoids inhibitors "
+                       "%d, scattered cell needs designator %d / avoids "
+                       "inhibitors %d\n",
+                       section, who,
+                       side.Band.MinX, side.Band.MaxX,
+                       side.Band.MinY, side.Band.MaxY,
+                       side.Checks.TargetRequireDesignator ? 1 : 0,
+                       side.Checks.TargetAvoidInhibitors ? 1 : 0,
+                       side.Checks.RandomRequireDesignator ? 1 : 0,
+                       side.Checks.RandomAvoidInhibitors ? 1 : 0);
+        };
+
+        describe(into.AI, "AI");
+        describe(into.Human, "human");
     }
 
     void ReadAutoFire(CCINIClass* pINI, const char* section, SWExt::AutoFireRule& into)
@@ -642,11 +685,7 @@ void SWTypeExt::ExtData::LoadFromINIFile(CCINIClass* pINI)
     this->AllowPlayer = pINI->ReadBool(section, "SW.AllowPlayer", true);
     this->AllowAI     = pINI->ReadBool(section, "SW.AllowAI", true);
 
-    this->Antares_UseAITargeting =
-        pINI->ReadBool(section, "SW.UseAITargeting", false);
-    this->Antares_AutoFire = pINI->ReadBool(section, "SW.AutoFire", false);
-
-    this->Scatter = SWExt::ScatterRule{};
+    this->Scatter = SWExt::ScatterConfig{};
     ReadScatter(pINI, section, this->Scatter);
 
     this->ParaDrop.Enabled = pINI->ReadBool(section, "SWExt.ParaDrop", false);
@@ -934,14 +973,29 @@ void SWTypeExt::ExtData::GatherSources(HouseClass* pFirer,
 
 bool SWTypeExt::ExtData::AllowsFireAt(HouseClass* pFirer, const CellStruct& cell) const
 {
+    return this->AllowsFireAt(pFirer, cell, true, true);
+}
+
+// Either half can be switched off, for the scatter's two stages.
+//
+// A disabled half is passed an EMPTY rule rather than being branched around,
+// because SWExt::Allows already treats an inactive rule as "passes" -- so the
+// two paths share one evaluator and cannot drift apart.
+bool SWTypeExt::ExtData::AllowsFireAt(HouseClass* pFirer, const CellStruct& cell,
+                                      bool checkDesignators,
+                                      bool checkInhibitors) const
+{
     if (!this->IsConfigured() || !pFirer)
         return true;
+
+    static const SWExt::Rule kNone{};
 
     std::vector<SWExt::Source> sources;
     SWExt::EvalContext ctx;
     this->GatherSources(pFirer, sources, ctx);
 
-    return SWExt::Allows(this->Inhibitors, this->Designators,
+    return SWExt::Allows(checkInhibitors  ? this->Inhibitors  : kNone,
+                         checkDesignators ? this->Designators : kNone,
                          sources, cell.X, cell.Y, ctx);
 }
 

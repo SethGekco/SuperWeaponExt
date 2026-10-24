@@ -6,6 +6,9 @@
 #include <SW/TargetScatter.h>
 
 #include <cstdio>
+#include <cstddef>
+#include <functional>
+#include <vector>
 
 using namespace SWExt;
 
@@ -29,9 +32,9 @@ namespace
         return ScatterBounds{ 0, 0, 200, 200 };
     }
 
-    ScatterRule Band(int minX, int maxX, int minY, int maxY)
+    ScatterBand Band(int minX, int maxX, int minY, int maxY)
     {
-        ScatterRule r;
+        ScatterBand r;
         r.MinX = minX; r.MaxX = maxX;
         r.MinY = minY; r.MaxY = maxY;
         r.Normalise();
@@ -44,7 +47,7 @@ static void Test_InertByDefault()
 {
     std::printf("an unset rule changes nothing\n");
 
-    ScatterRule none;
+    ScatterBand none;
     CHECK(!none.Active(), "0,0 on both axes is inactive");
 
     // Even handed a non-zero roll — which cannot happen in the adapter, but is
@@ -129,7 +132,7 @@ static void Test_ReversedBandIsNormalised()
 {
     std::printf("a reversed band is a typo, not an empty range\n");
 
-    ScatterRule r;
+    ScatterBand r;
     r.MinX = 4;  r.MaxX = -4;
     r.MinY = -1; r.MaxY = 1;
     r.Normalise();
@@ -191,6 +194,198 @@ static void Test_UnusableBoundsAreIgnored()
     CHECK(!r.Clamped, "and nothing claims to have clamped it");
 }
 
+
+// -----------------------------------------------------------------------------
+namespace
+{
+    // A scripted generator: hands back the next value in a list, so a test can
+    // pin exactly which rolls happen and in what order. Counts its draws,
+    // because "how many values did we consume" is the determinism property
+    // that matters most here.
+    struct FakeRoller
+    {
+        std::vector<int> Values;
+        std::size_t Next     = 0;
+        int         Draws    = 0;
+        int         Fallback = 0;   // returned once Values runs out
+
+        int operator()(int lo, int hi)
+        {
+            ++this->Draws;
+            const int v = this->Next < this->Values.size()
+                        ? this->Values[this->Next++] : this->Fallback;
+            return v < lo ? lo : (v > hi ? hi : v);
+        }
+    };
+
+    // Accepts every cell.
+    auto AcceptAll = [](int, int) { return true; };
+
+    // Accepts nothing.
+    auto AcceptNone = [](int, int) { return false; };
+}
+
+// -----------------------------------------------------------------------------
+static void Test_SidesAndDefaults()
+{
+    std::printf("the AI and Human sides are independent, checks default strict\n");
+
+    ScatterConfig cfg;
+    CHECK(!cfg.Active(), "a config with no band on either side is inactive");
+
+    cfg.AI.Band = Band(-2, 2, -2, 2);
+    CHECK(cfg.Active(), "an AI band alone activates the config");
+    CHECK(cfg.For(false).Band.Active(), "the AI side carries it");
+    CHECK(!cfg.For(true).Band.Active(), "and the human side is untouched");
+
+    ScatterConfig human;
+    human.Human.Band = Band(-1, 1, 0, 0);
+    CHECK(human.Active(), "a human band alone also activates the config");
+    CHECK(!human.For(false).Band.Active(), "without touching the AI side");
+
+    const ScatterChecks def;
+    CHECK(def.TargetRequireDesignator, "designators are required at the aim point by default");
+    CHECK(def.TargetAvoidInhibitors,   "inhibitors are avoided at the aim point by default");
+    CHECK(def.RandomRequireDesignator, "and at the scattered cell");
+    CHECK(def.RandomAvoidInhibitors,   "likewise inhibitors");
+    CHECK(def.AnyTarget() && def.AnyRandom(), "so both stages are live by default");
+
+    ScatterChecks off;
+    off.TargetRequireDesignator = false;
+    off.TargetAvoidInhibitors   = false;
+    CHECK(!off.AnyTarget(), "turning both target checks off skips the stage");
+    CHECK(off.AnyRandom(),  "without disturbing the random stage");
+}
+
+// -----------------------------------------------------------------------------
+static void Test_ResolveTakesTheFirstAcceptableRoll()
+{
+    std::printf("the first acceptable roll wins\n");
+
+    auto const band = Band(-5, 5, -5, 5);
+    FakeRoller roll{ { 3, -1 }, 0, 0, 0 };
+
+    auto const r = ResolveScatter(band, 50, 60, Wide(), std::ref(roll), AcceptAll);
+    CHECK(r.Fire, "it fires");
+    CHECK(r.X == 53 && r.Y == 59, "at the first rolled cell");
+    CHECK(r.Attempts == 1, "after one attempt");
+    CHECK(roll.Draws == 2, "having drawn exactly two values");
+    CHECK(!r.UsedOriginal, "and did not fall back");
+}
+
+// -----------------------------------------------------------------------------
+static void Test_ResolveRerollsPastRefusedCells()
+{
+    std::printf("a refused cell is re-rolled, not accepted\n");
+
+    auto const band = Band(-5, 5, -5, 5);
+    // First two rolls land on cells the checks refuse; the third is fine.
+    FakeRoller roll{ { 1, 0, 2, 0, 4, 0 }, 0, 0, 0 };
+
+    auto const r = ResolveScatter(band, 50, 60, Wide(), std::ref(roll),
+                                  [](int x, int) { return x >= 54; });
+
+    CHECK(r.Fire, "it fires");
+    CHECK(r.X == 54, "at the first cell that passes");
+    CHECK(r.Attempts == 3, "after three attempts");
+    CHECK(roll.Draws == 6, "two draws per attempt, always both axes");
+}
+
+// -----------------------------------------------------------------------------
+static void Test_BothAxesDrawnEvenWhenDegenerate()
+{
+    std::printf("a 0,0 axis is still drawn -- the determinism rule\n");
+
+    // Y band is 0,0. The Y draw must still happen, or clients whose config
+    // differs would consume different numbers of values.
+    auto const band = Band(-3, 3, 0, 0);
+    FakeRoller roll{ { 2, 99 }, 0, 0, 0 };
+
+    auto const r = ResolveScatter(band, 50, 60, Wide(), std::ref(roll), AcceptAll);
+    CHECK(roll.Draws == 2, "both axes drew, even the degenerate one");
+    CHECK(r.X == 52, "X moved");
+    CHECK(r.Y == 60, "Y did not, because its roll is clamped to 0,0");
+}
+
+// -----------------------------------------------------------------------------
+static void Test_ExhaustedSearchFallsBackToTheAimPoint()
+{
+    std::printf("when no roll works, the aim point is the last candidate\n");
+
+    auto const band = Band(-5, 5, -5, 5);
+
+    // Every roll moves the cell, and only the aim point is acceptable.
+    FakeRoller roll{ {}, 0, 0, 3 };
+    auto const r = ResolveScatter(band, 50, 60, Wide(), std::ref(roll),
+                                  [](int x, int y) { return x == 50 && y == 60; });
+
+    CHECK(r.Fire, "it still fires");
+    CHECK(r.X == 50 && r.Y == 60, "from the unscattered cell");
+    CHECK(r.UsedOriginal, "and says it fell back");
+    CHECK(!r.Shifted, "which is not a shift");
+    CHECK(r.Attempts == ScatterAttempts, "after exhausting every attempt");
+    CHECK(roll.Draws == 2 * ScatterAttempts, "two draws per attempt throughout");
+}
+
+// -----------------------------------------------------------------------------
+static void Test_ARollBackOntoTheAimPointIsNotAFallBack()
+{
+    std::printf("rolling 0,0 is an ordinary result, not an exhausted search\n");
+
+    auto const band = Band(-5, 5, -5, 5);
+    FakeRoller roll{ {}, 0, 0, 0 };   // every roll is zero
+
+    auto const r = ResolveScatter(band, 50, 60, Wide(), std::ref(roll), AcceptAll);
+    CHECK(r.Fire, "it fires");
+    CHECK(r.X == 50 && r.Y == 60, "from the aim point");
+    CHECK(!r.UsedOriginal, "but as a rolled result, not a fall-back");
+    CHECK(r.Attempts == 1, "on the first attempt");
+    CHECK(!r.Shifted, "and nothing moved");
+}
+
+// -----------------------------------------------------------------------------
+static void Test_RefusesWhenEvenTheAimPointFails()
+{
+    std::printf("the fall-back is held to the same checks, so it can refuse\n");
+
+    auto const band = Band(-5, 5, -5, 5);
+    FakeRoller roll{ {}, 0, 0, 3 };
+
+    auto const r = ResolveScatter(band, 50, 60, Wide(), std::ref(roll), AcceptNone);
+    CHECK(!r.Fire, "the launch is refused");
+    CHECK(r.UsedOriginal, "after falling back");
+    CHECK(r.Attempts == ScatterAttempts, "and exhausting the rolls first");
+}
+
+// -----------------------------------------------------------------------------
+static void Test_InactiveBandResolvesToTheAimPoint()
+{
+    std::printf("an inactive band draws nothing and fires as aimed\n");
+
+    ScatterBand none;
+    FakeRoller roll{ { 5, 5 }, 0, 0, 0 };
+
+    auto const r = ResolveScatter(none, 50, 60, Wide(), std::ref(roll), AcceptNone);
+    CHECK(r.Fire, "it fires -- the random stage does not apply");
+    CHECK(r.X == 50 && r.Y == 60, "from the aim point");
+    CHECK(roll.Draws == 0, "and consumed no randomness at all");
+    CHECK(r.Attempts == 0, "having made no attempt");
+}
+
+// -----------------------------------------------------------------------------
+static void Test_AttemptCountIsHonoured()
+{
+    std::printf("the attempt cap is respected\n");
+
+    auto const band = Band(-5, 5, -5, 5);
+    FakeRoller roll{ {}, 0, 0, 3 };
+
+    auto const r = ResolveScatter(band, 50, 60, Wide(), std::ref(roll),
+                                  AcceptNone, 3);
+    CHECK(r.Attempts == 3, "stopped at the cap given");
+    CHECK(roll.Draws == 6, "with two draws each");
+}
+
 // -----------------------------------------------------------------------------
 int main()
 {
@@ -206,6 +401,15 @@ int main()
     Test_ClampedToMap();
     Test_ClampCanCancelAShift();
     Test_UnusableBoundsAreIgnored();
+    Test_SidesAndDefaults();
+    Test_ResolveTakesTheFirstAcceptableRoll();
+    Test_ResolveRerollsPastRefusedCells();
+    Test_BothAxesDrawnEvenWhenDegenerate();
+    Test_ExhaustedSearchFallsBackToTheAimPoint();
+    Test_ARollBackOntoTheAimPointIsNotAFallBack();
+    Test_RefusesWhenEvenTheAimPointFails();
+    Test_InactiveBandResolvesToTheAimPoint();
+    Test_AttemptCountIsHonoured();
 
     std::printf("\n%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;

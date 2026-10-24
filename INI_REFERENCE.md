@@ -1132,112 +1132,119 @@ either as a bar button by name.
 
 ---
 
-## AI-targeting scatter — stop a targeted superweapon hitting the same tile
+## Target scatter — stop a targeted superweapon hitting the same tile
 
 Antares' `SW.AITargeting=` is **exact**. `Base` means the base centre, every
 launch, forever. For a superweapon that destroys things that hardly matters; for
-one that *delivers* something — a building, a paradrop, a structure-planting
-effect — it means every launch of the match lands on the same tile, which reads
-as mechanical and is trivially predictable.
+one that *delivers* something — a building, a paradrop — it means every launch
+of the match lands on the same tile.
 
 ```ini
 [SOMESW]
 SW.AITargeting=Base
-SWExt.AITargeting.RandomX=-4,4     ; shift up to 4 cells left or right
-SWExt.AITargeting.RandomY=-4,4     ; ...and up to 4 cells up or down
+AITargeting.RandomX=-4,4          ; AI-owned shots scatter up to 4 cells
+AITargeting.RandomY=-4,4
+AITargeting.RandomX.Human=0,0     ; ...but a human's own shots do not
+AITargeting.RandomY.Human=0,0
 ```
 
-| Key | Default | Meaning |
-|---|---|---|
-| `SWExt.AITargeting.RandomX` | `0,0` | `min,max` horizontal shift, **in cells**, inclusive and signed |
-| `SWExt.AITargeting.RandomY` | `0,0` | the same on the vertical axis |
+Both bands are `min,max` in **cells**, inclusive and signed, defaulting to
+`0,0`. A superweapon with no band on either side is skipped before any work is
+done, so the default costs nothing.
 
-`0,0` — the default — is exactly the old behaviour and costs nothing: the
-superweapon is skipped before any work is done.
+### The `.Human` suffix rule
+
+Every key in this family takes a `.Human` twin. **The AI value is the default
+for the human value**, so you only write `.Human` where the two should differ.
+Which side a launch uses is decided by the **owning house** —
+`IsControlledByHuman()` — and nothing else.
+
+> A house's control is synced state, so every client picks the same side. That
+> matters more than it looks: the side picks the band, and the band drives how
+> many values are drawn from the shared random generator.
 
 ### Shapes the bands can take
 
 - `-4,4` — symmetric jitter, the usual case.
 - `4` — a single number is shorthand for `-4,4`.
 - `2,6` — **one-sided**. Always shifts right by two to six cells; the target is
-  never where targeting put it. Useful for "land beside the base, not on it".
+  never where targeting put it.
 - `0,6` — zero to six cells right, so "unchanged" is one of the outcomes.
 - `4,-4` — a reversed band is read as `-4,4` and says so once in the log.
 
 The axes are independent: setting only `RandomX` leaves the Y coordinate alone.
 
-### Which launches are scattered
+### Two stages, four checks
 
-Only launches whose cell came from **targeting**, never a cell a human aimed.
-That is what the name promises, and it is the useful scoping: a player who
-clicks a tile expects the shot to land on that tile.
+A scattered shot has two interesting cells: the one targeting chose, and the one
+the dice moved it to. Inhibitors and designators can be enforced at either, or
+both, or neither.
 
-A launch is treated as targeted when any of these hold:
+| Key | Default | Checked against |
+|---|---|---|
+| `AITargeting.TargetRequireDesignator` | `yes` | the **pre-random** cell — a designator must be in range of where the shot was aimed |
+| `AITargeting.TargetAvoidInhibitors` | `yes` | the **pre-random** cell — no inhibitor may cover where it was aimed |
+| `AITargeting.RandomRequireDesignator` | `yes` | the **post-random** cell — a designator must be in range of where it lands |
+| `AITargeting.RandomAvoidInhibitors` | `yes` | the **post-random** cell — no inhibitor may cover where it lands |
 
-| Condition | Why |
-|---|---|
-| the firing house is AI-controlled | all its launches go through Antares' `TryFire` |
-| `SW.UseAITargeting=yes` | Antares routes the player's click through `TryFire` too |
-| `SW.AutoFire=yes` | Antares' auto-fire tick fires it through `TryFire` |
-| `SWExt.AutoFire=yes` fired this shot | our own auto-fire chose the cell, not a player |
+Each takes a `.Human` twin, e.g. `AITargeting.RandomAvoidInhibitors.Human=no`.
+That is the eight keys.
 
-> ⚠ **One imprecision, stated plainly.** A *human* house with `SW.AutoFire=yes`
-> who manually clicks the superweapon is scattered as though it were targeted.
-> In practice the auto-fire tick launches it the frame it finishes charging, so
-> there is no window to click in — but `HouseClass::Fire_SW` carries no signal
-> that distinguishes its callers, so this is an approximation, not a proof.
+> ⚠ **These are per CELL, not per axis.** A designator check asks "is this cell
+> within range of a designator", and that question has no X-only or Y-only
+> answer — so there is one key per check rather than one per axis. A per-axis
+> pair would be two keys asking the same question about the same cell, needing a
+> tie-break rule no modder could predict.
 
-### The scattered cell is the real cell
+**What failure does:**
 
-Everything downstream sees the shifted cell: inhibitor and designator
-constraints, `SWExt.ParaDrop`, beacon placement, and the engine's own launch.
-In particular **an inhibitor is checked against where the shot actually lands**,
-not where targeting aimed it, so a scatter can push a shot into an inhibited
-area and have it refused. That is correct — the protection is of a place, not of
-an intention — but it means a large scatter near a defended base will see more
-refusals.
+- **Target stage fails** → the launch is **refused**. The shot was aimed
+  somewhere it may not go, and no amount of scattering makes that legitimate.
+- **Random stage fails** → **re-roll**, up to 8 times. The first acceptable cell
+  wins. If none is acceptable, the unscattered aim point is tried — held to the
+  *same* random-stage checks, so `RandomRequireDesignator=yes` is not quietly
+  bypassed by an exhausted search. If that fails too, the launch is refused.
+
+Every outcome is logged, including which try succeeded.
+
+### These keys only do something when a band is set
+
+`AITargeting.TargetRequireDesignator=no` on a superweapon with no `RandomX` or
+`RandomY` changes nothing: without a band there is only one cell, and it is
+checked the ordinary way by `SWExt.Inhibitors` / `SWExt.Designators`. The stage
+keys belong to the scatter and are inert without it.
+
+When a band *is* set, the scatter owns the constraint checking for that
+superweapon — the ordinary check is not also run against the final cell, because
+running both would make `AITargeting.RandomAvoidInhibitors=no` a lie.
 
 ### Map edges
 
 The shifted cell is clamped into the map bounds, so a superweapon aimed near the
-edge still scatters, just not off the map. If even the clamped cell is not a
-legal cell the **unshifted** cell is used — targeting produced it, so it is
-known good. Both outcomes are logged.
-
-### `SW.`-prefixed alias
-
-`SW.AITargeting.RandomX` / `SW.AITargeting.RandomY` are accepted as aliases, as
-the natural companions to `SW.AITargeting`. The `SWExt.` spelling is canonical
-and wins if both are present.
-
-> ⚠ The alias lives in **Antares' namespace**. If a future Antares claims that
-> exact key, both DLLs will read it and both will act on it. The `SWExt.`
-> spelling cannot collide; prefer it.
+edge still scatters, just not off the map. A cell that is not legal at all is
+rejected like any other failed candidate and re-rolled.
 
 ### Determinism
 
 The offsets come from `ScenarioClass::Instance->Random` — the in-match synced
-generator Antares itself uses for `LightningRandom` — never `Randomizer::Global`,
-which YRpp documents as being for the map generator and other randomness outside
-a match.
+generator Antares itself uses for `LightningRandom` — never
+`Randomizer::Global`, which YRpp documents as being for the map generator and
+other randomness outside a match.
 
-Every client evaluates the same launch on the same frame from the same synced
-inputs, and draws **both** values in X-then-Y order whenever the rule is active,
-including when a band is `0,0`. That last part is not an optimisation that was
-missed: a client that skipped a draw another client made would leave the two
-generators out of step and desync the whole match from that point, which is far
-worse than a wrongly-aimed shot.
+Both offsets are drawn on **every attempt**, in X-then-Y order, even when a band
+is `0,0`. The *number* of attempts varies with the outcome, which is fine: every
+client evaluates the same launch on the same frame from the same synced inputs,
+so every client takes the same number of attempts. What would desync is a client
+skipping a draw another client made — which is exactly what a "don't bother
+rolling Y, its band is 0,0" optimisation would cause. Do not add one.
 
 ### What the log says
 
 ```
-[SuperWeaponExt] [SOMESW] AI-targeting scatter: X -4..4, Y -4..4 cells
-[SuperWeaponExt] SOMESW house 2: AI target (64,72) scattered by (+3,-1) to (67,71)
-```
-
-and, when the map got in the way:
-
-```
-[SuperWeaponExt] SOMESW house 2: AI target (3,72) scattered by (-4,+2) to (0,74) [clamped to map]
-[SuperWeaponExt] SOMESW scatter (3,72) -> (-1,74) is not a legal cell; keeping the targeted cell
+[SuperWeaponExt] [SOMESW] AI scatter: X -4..4, Y -4..4 cells; aim point needs designator 1 / avoids inhibitors 1, scattered cell needs designator 1 / avoids inhibitors 1
+[SuperWeaponExt] [SOMESW] human scatter: X 0..0, Y 0..0 cells; ...
+[SuperWeaponExt] SOMESW house 2 (AI): target (64,72) scattered to (67,71) on try 1
+[SuperWeaponExt] SOMESW house 2 (AI): target (64,72) scattered to (61,75) on try 3 [clamped to map]
+[SuperWeaponExt] SOMESW house 2 (AI): no scattered cell passed after 8 tries; firing at the aim point (64,72)
+[SuperWeaponExt] SOMESW house 2 (AI): aim point (64,72) fails the target-stage constraints; refused
 ```

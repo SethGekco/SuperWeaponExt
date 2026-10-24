@@ -1,47 +1,75 @@
 #pragma once
 /*
- * SuperWeaponExt — scatter an AI-chosen superweapon target by a few cells.
+ * SuperWeaponExt — scatter a superweapon's target by a few cells.
  *
  * ENGINE-FREE, like Constraint.h / Money.h / Formation.h / StandingOrder.h /
- * AutoFire.h. The random draws happen in the adapter; everything decidable
- * without them lives here and is tested off-target.
+ * AutoFire.h. The random draws and the constraint evaluation both happen in the
+ * adapter, behind callbacks, so everything that decides an outcome is testable
+ * off-target.
  *
  * ============================================================================
  * WHAT THIS COMPLEMENTS
  * ============================================================================
  *
- * Antares' `SW.AITargeting=` picks a cell for a superweapon the AI fires — and
- * for one the player fires, when `SW.UseAITargeting=yes`. Every mode of it is
- * EXACT: `Base` means the base centre, every time, forever. A superweapon that
- * delivers something to a cell therefore delivers it to the same cell on every
- * launch, which reads as mechanical and makes the result trivially predictable.
+ * Antares' `SW.AITargeting=` is EXACT: `Base` means the base centre, every
+ * launch, forever. For a superweapon that destroys something that hardly
+ * matters; for one that DELIVERS something — a building, a paradrop — it means
+ * every launch of the match lands on the same tile.
  *
- * These rules add the missing jitter:
+ *     AITargeting.RandomX=-4,4          ; AI-owned shots
+ *     AITargeting.RandomY=-4,4
+ *     AITargeting.RandomX.Human=0,0     ; ...and human-owned shots separately
+ *     AITargeting.RandomY.Human=0,0
  *
- *     SWExt.AITargeting.RandomX=-4,4     ; shift up to 4 cells either way
- *     SWExt.AITargeting.RandomY=-4,4
+ * `.Human` is a SUFFIX RULE, not a one-off: append it to any key here and the
+ * value applies to shots fired by a human-controlled house, defaulting to the
+ * AI value when absent. Which side a launch uses is decided by the OWNING
+ * HOUSE (`IsControlledByHuman`), which is synced state and admits no ambiguity.
  *
- * Both are `min,max` in CELLS, inclusive, signed, defaulting to `0,0` — so an
- * unset rule is exactly the old behaviour and costs nothing. The range need not
- * straddle zero: `2,6` always shifts right by two to six cells.
+ * ============================================================================
+ * TWO STAGES, FOUR CHECKS
+ * ============================================================================
+ *
+ * A scattered shot has two interesting cells: the one targeting chose, and the
+ * one the dice moved it to. Inhibitors and designators can be checked at either
+ * or both, so each gets its own key (plus a `.Human` twin):
+ *
+ *     AITargeting.TargetRequireDesignator=yes   ; the PRE-random cell
+ *     AITargeting.TargetAvoidInhibitors=yes
+ *     AITargeting.RandomRequireDesignator=yes   ; the POST-random cell
+ *     AITargeting.RandomAvoidInhibitors=yes
+ *
+ * All default to `yes`, which is the strict reading: the shot must be legal
+ * both where it was aimed and where it lands.
+ *
+ * ⚠ The checks are PER CELL, not per axis. A designator check asks "is this
+ * cell within range of a designator", and that question has no X-only or
+ * Y-only answer — which is why there is one key per check rather than one per
+ * axis. A per-axis pair would be two keys asking the same question about the
+ * same cell, needing a tie-break rule no modder could predict.
+ *
+ * Failing the TARGET stage refuses the launch outright: the shot was aimed
+ * somewhere it may not go. Failing the RANDOM stage re-rolls — see
+ * ResolveScatter — and only refuses when no roll works and the unscattered
+ * cell will not do either.
  *
  * ============================================================================
  * ⚠ DETERMINISM — read before touching the adapter
  * ============================================================================
  *
- * The draws MUST come from the in-match synced generator
+ * Draws MUST come from the in-match synced generator
  * (`ScenarioClass::Instance->Random`), never `Randomizer::Global`, whose own
- * header says it is for the map generator and other out-of-match randomness.
+ * YRpp header says it is for the map generator and other randomness OUTSIDE a
+ * match.
  *
- * And the adapter must draw BOTH values, in X-then-Y order, on every launch
- * where the rule is active — never skipping one because its band happens to be
- * degenerate. Every client evaluates the same launch on the same frame, so an
- * identical sequence of draws leaves every client's generator in the same
- * state. A client that draws once where another draws twice desyncs the whole
- * match from that point on, which is a far worse failure than a wrong cell.
- *
- * That is why ApplyScatter takes the rolls as PARAMETERS. The core cannot skip
- * a draw it never makes, and the test suite can pin exact outcomes.
+ * ResolveScatter draws BOTH offsets, in X-then-Y order, on every attempt —
+ * never skipping one because its band is degenerate. The NUMBER of attempts
+ * varies with the outcome, and that is fine: every client evaluates the same
+ * launch on the same frame from the same synced inputs, so every client takes
+ * the same number of attempts and consumes the same number of values. What
+ * would desync is a client skipping a draw another client made, which is
+ * exactly what a "don't bother rolling Y, its band is 0,0" optimisation would
+ * cause. Do not add one.
  */
 
 namespace SWExt
@@ -61,9 +89,9 @@ namespace SWExt
         }
     };
 
-    struct ScatterRule
+    // `min,max` per axis, in cells.
+    struct ScatterBand
     {
-        // `min,max` per axis, in cells. 0,0 = no shift on that axis.
         int MinX = 0;
         int MaxX = 0;
         int MinY = 0;
@@ -103,6 +131,50 @@ namespace SWExt
         }
     };
 
+    // Which constraints are enforced, and at which of the two stages.
+    struct ScatterChecks
+    {
+        bool TargetRequireDesignator = true;
+        bool TargetAvoidInhibitors   = true;
+        bool RandomRequireDesignator = true;
+        bool RandomAvoidInhibitors   = true;
+
+        bool AnyTarget() const
+        {
+            return this->TargetRequireDesignator || this->TargetAvoidInhibitors;
+        }
+
+        bool AnyRandom() const
+        {
+            return this->RandomRequireDesignator || this->RandomAvoidInhibitors;
+        }
+    };
+
+    struct ScatterSide
+    {
+        ScatterBand   Band;
+        ScatterChecks Checks;
+    };
+
+    // One superweapon's complete scatter configuration.
+    struct ScatterConfig
+    {
+        ScatterSide AI;
+        ScatterSide Human;
+
+        // The early-out for the launch hook: a superweapon with no band on
+        // either side is not ours to touch and costs nothing.
+        bool Active() const
+        {
+            return this->AI.Band.Active() || this->Human.Band.Active();
+        }
+
+        const ScatterSide& For(bool firerIsHuman) const
+        {
+            return firerIsHuman ? this->Human : this->AI;
+        }
+    };
+
     struct ScatterResult
     {
         int  X = 0;
@@ -113,17 +185,15 @@ namespace SWExt
 
     // Apply two already-drawn offsets to a cell.
     //
-    // `rollX` / `rollY` are what the adapter got back from RandomRanged over
+    // `rollX` / `rollY` are what the caller got back from the generator over
     // [MinX,MaxX] and [MinY,MaxY]. They are clamped to their own band here as
     // well, so a caller that passes something out of range cannot push a cell
     // somewhere the configuration never allowed.
     //
     // Out-of-bounds results are CLAMPED to the map rather than rejected: a
     // superweapon aimed near the edge should still scatter, just not off the
-    // map. The caller decides what to do when even the clamped cell is illegal
-    // — the adapter falls back to the unshifted cell, which is always legal
-    // because the targeting that produced it said so.
-    inline ScatterResult ApplyScatter(const ScatterRule& rule, int x, int y,
+    // map.
+    inline ScatterResult ApplyScatter(const ScatterBand& band, int x, int y,
                                       int rollX, int rollY,
                                       const ScatterBounds& bounds)
     {
@@ -131,13 +201,13 @@ namespace SWExt
         out.X = x;
         out.Y = y;
 
-        if (!rule.Active())
+        if (!band.Active())
             return out;
 
-        if (rollX < rule.MinX) rollX = rule.MinX;
-        if (rollX > rule.MaxX) rollX = rule.MaxX;
-        if (rollY < rule.MinY) rollY = rule.MinY;
-        if (rollY > rule.MaxY) rollY = rule.MaxY;
+        if (rollX < band.MinX) rollX = band.MinX;
+        if (rollX > band.MaxX) rollX = band.MaxX;
+        if (rollY < band.MinY) rollY = band.MinY;
+        if (rollY > band.MaxY) rollY = band.MaxY;
 
         int nx = x + rollX;
         int ny = y + rollY;
@@ -157,6 +227,76 @@ namespace SWExt
         out.X = nx;
         out.Y = ny;
         out.Shifted = (nx != x) || (ny != y);
+        return out;
+    }
+
+    // How many rolls a shot gets before giving up on finding a legal cell.
+    // Bounded on purpose: this runs inside a launch, and an unbounded search
+    // over a band that happens to contain no legal cell would hang the frame.
+    inline constexpr int ScatterAttempts = 8;
+
+    struct ScatterOutcome
+    {
+        int  X = 0;
+        int  Y = 0;
+        bool Fire    = true;    // false = refuse the launch entirely
+        bool Shifted = false;
+        bool Clamped = false;
+        bool UsedOriginal = false;  // every roll failed; fell back to the aim point
+        int  Attempts = 0;
+    };
+
+    // THE decision for the random stage.
+    //
+    // `roll(min, max)` draws one offset. `accept(x, y)` answers whether that
+    // cell passes whatever Random-stage constraints are enabled — the adapter
+    // supplies the real inhibitor/designator evaluation; the tests supply a
+    // fake, which is the point of taking it as a parameter.
+    //
+    // "Move it somewhere else that does, or just not fire":
+    //   1. up to `attempts` rolls; the first acceptable one wins
+    //   2. otherwise the UNSCATTERED cell, if that is itself acceptable
+    //   3. otherwise refuse
+    //
+    // ⚠ Both offsets are drawn on EVERY attempt, in X-then-Y order, even when
+    // a band is degenerate. See the determinism note at the top of this file.
+    template <typename RollFn, typename AcceptFn>
+    inline ScatterOutcome ResolveScatter(const ScatterBand& band, int x, int y,
+                                         const ScatterBounds& bounds,
+                                         RollFn&& roll, AcceptFn&& accept,
+                                         int attempts = ScatterAttempts)
+    {
+        ScatterOutcome out;
+        out.X = x;
+        out.Y = y;
+
+        if (!band.Active())
+            return out;
+
+        for (int i = 0; i < attempts; ++i)
+        {
+            const int rollX = roll(band.MinX, band.MaxX);
+            const int rollY = roll(band.MinY, band.MaxY);
+
+            ++out.Attempts;
+
+            auto const r = ApplyScatter(band, x, y, rollX, rollY, bounds);
+            if (!accept(r.X, r.Y))
+                continue;
+
+            out.X       = r.X;
+            out.Y       = r.Y;
+            out.Shifted = r.Shifted;
+            out.Clamped = r.Clamped;
+            return out;
+        }
+
+        // No roll produced a cell the Random-stage checks accept. The aim point
+        // is the only other candidate the configuration sanctions, and it is
+        // held to the same checks — otherwise `RandomRequireDesignator=yes`
+        // would be quietly bypassed by every exhausted search.
+        out.UsedOriginal = true;
+        out.Fire = accept(x, y);
         return out;
     }
 }

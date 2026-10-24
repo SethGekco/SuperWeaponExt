@@ -107,19 +107,10 @@ public:
         // Fire automatically when a condition occurs. Inert unless configured.
         SWExt::AutoFireRule AutoFire;
 
-        // Scatter the AI-chosen target by a few cells. Inert unless configured.
-        SWExt::ScatterRule Scatter;
-
-        // Mirrors of two ANTARES keys, read from the same section so we can tell
-        // whether a launch's cell came from AI targeting or from a player's own
-        // click. We do not redefine either; we read them to scope our scatter
-        // the way its name promises.
-        //
-        // ⚠ Why a mirror and not Antares' parsed value: Antares' SWTypeExt lives
-        // in Antares.dll and is not reachable from here. The INI is, and it is
-        // the same source of truth both DLLs parse.
-        bool Antares_UseAITargeting = false;
-        bool Antares_AutoFire       = false;
+        // Scatter the target by a few cells, with a separate band and separate
+        // constraint rules for AI- and human-owned shots. Inert unless
+        // configured. See SW/TargetScatter.h.
+        SWExt::ScatterConfig Scatter;
 
         // Beacon placement. The superweapon IS the placement mechanism -- see
         // Hooks.Launch.cpp. <0 = this SW places no beacon.
@@ -220,6 +211,14 @@ public:
         // permitted.
         bool AllowsFireAt(HouseClass* pFirer, const CellStruct& cell) const;
 
+        // The same verdict with either half switched off, for the scatter's two
+        // stages: the aim point and the scattered cell are each checked against
+        // whichever constraints their stage enables.
+        //
+        // Passing both `true` is identical to AllowsFireAt above.
+        bool AllowsFireAt(HouseClass* pFirer, const CellStruct& cell,
+                          bool checkDesignators, bool checkInhibitors) const;
+
         // Explain a refusal: names the inhibitor that blocked, its resolved
         // radius, and how that radius was arrived at (base / growth / ratio).
         //
@@ -300,21 +299,6 @@ public:
     static void TickPendingParaDrops();
 
     // --- auto-fire (Hooks.AutoFire.cpp) ---
-
-    // Marks a launch as coming from SWExt.AutoFire rather than from a player
-    // aiming. Only the AI-targeting scatter looks at it, to decide whether a
-    // cell was chosen by targeting or by a human.
-    //
-    // Scoped rather than a bare setter so an early return inside the launch
-    // cannot leave the flag stuck on for the next, manual, shot.
-    struct AutoFireLaunchScope
-    {
-        AutoFireLaunchScope();
-        ~AutoFireLaunchScope();
-
-        AutoFireLaunchScope(const AutoFireLaunchScope&) = delete;
-        AutoFireLaunchScope& operator=(const AutoFireLaunchScope&) = delete;
-    };
 
     // Record that `pHouse` launched `swIndex` this frame. Called from the
     // Fire_SW hook, the one place every launch in the game passes through.

@@ -378,10 +378,6 @@ void SWTypeExt::TickAutoFire()
             // This also re-enters our own Fire_SW hook, which is intended: the
             // launch is then subject to inhibitors, money gates and everything
             // else, exactly as a manual shot would be.
-            //
-            // The scope tells the AI-targeting scatter that this cell was
-            // chosen by a rule, not aimed by a player, so it may be jittered.
-            SWTypeExt::AutoFireLaunchScope const autoFired;
             pOwner->Fire_SW(s, cell);
         }
     }
