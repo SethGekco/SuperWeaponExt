@@ -51,7 +51,7 @@
 #include <HouseClass.h>
 #include <HouseTypeClass.h>   // Type->ID, to name the firing country in the log
 #include <MapClass.h>
-#include <ObjectClass.h>    // abstract_cast target for the paradrop terrain survey
+#include <ObjectClass.h>    // ObjectClass::GetHeight, for the paradrop trace
 #include <RulesClass.h>   // RulesClass::Instance->ParadropRadius
 #include <TechnoTypeClass.h>
 #include <Unsorted.h>       // Unsorted::ScenarioInit
@@ -560,22 +560,220 @@ namespace
         return raw;
     }
 
-    // One survey line per plane, ever. Bounded so a long match cannot grow it
-    // without limit; oldest entries fall off and at worst a plane is surveyed
-    // twice, which is harmless for a diagnostic.
-    bool AlreadySurveyed(AircraftClass* pPlane)
+    // Human-readable LandType, for the terrain question.
+    const char* LandName(int v)
     {
-        static std::vector<AircraftClass*> s_seen;
+        static const char* const kLand[] = {
+            "Clear", "Road", "Water", "Rock", "Wall",
+            "Tiberium", "Beach", "Rough", "Ice", "Railroad" };
+        return (v >= 0 && v < 10) ? kLand[v] : "?";
+    }
 
-        for (auto const* e : s_seen)
-            if (e == pPlane)
-                return true;
+    // Resolve whatever the plane is aiming at to a cell.
+    //
+    // ⚠ Via AbstractClass::GetCoords, NOT abstract_cast<ObjectClass*>. A
+    // paradrop target is a CellClass, which is an AbstractClass but not an
+    // ObjectClass, so the object cast silently produced "no target" on nearly
+    // every line of the previous trace.
+    CellClass* TargetCellOf(AircraftClass* pPlane, CellStruct& out)
+    {
+        if (!pPlane || !pPlane->Target)
+            return nullptr;
 
-        s_seen.push_back(pPlane);
-        if (s_seen.size() > 256)
-            s_seen.erase(s_seen.begin());
+        out = CellClass::Coord2Cell(pPlane->Target->GetCoords());
+        return MapClass::Instance.TryGetCellAt(out);
+    }
 
-        return false;
+    // How many passengers are still aboard.
+    //
+    // Cross-checked once against the raw offset the engine itself uses:
+    // AircraftClass::Paradrop does `lea ecx,[edi+0x114]` to reach Passengers,
+    // so +0x114 is ground truth and YRpp's layout is the thing being verified.
+    // Same discipline as the ParadropRadius check, which caught nothing but
+    // cost one line.
+    int PassengersAboard(AircraftClass* pPlane)
+    {
+        if (!pPlane)
+            return -1;
+
+        const int viaYRpp = pPlane->Passengers.NumPassengers;
+
+        static bool s_checked = false;
+        if (!s_checked)
+        {
+            s_checked = true;
+            const int raw = *reinterpret_cast<int*>(
+                reinterpret_cast<unsigned char*>(pPlane) + 0x114);
+            Debug::Log("[SuperWeaponExt] Passengers offset: raw[+0x114]=%d, "
+                       "YRpp field=%d -> %s\n", raw, viaYRpp,
+                       raw == viaYRpp ? "AGREE" : "MISMATCH (YRpp layout is off)");
+        }
+
+        return viaYRpp;
+    }
+
+    // Is the plane itself standing somewhere the engine will let it drop?
+    //
+    // ⚠ THIS IS THE GATE THAT CAUSES THE HOVER, and it is not our code.
+    // Mission_ParadropOverfly (0x415960) does, in the branch taken once the
+    // plane is inside the drop radius:
+    //
+    //     4159C8:  lea  ecx,[esi+0x9C]        ; the PLANE's own Location
+    //     4159EB:  mov  ecx,0x87F7E8          ; MapClass::Instance
+    //     4159F0:  call 0x5785F0              ; IsWithinUsableArea(coords)
+    //     4159F5:  test al,al
+    //     4159F7:  je   0x415A39              ; false -> `mov eax,5; ret`
+    //     4159FB:  call 0x415C60              ; true  -> AircraftClass::Paradrop
+    //
+    // The false branch returns a 5-frame delay and does nothing else: no drop,
+    // no new mission, no change of destination. So a plane that has arrived at
+    // its destination, is inside the radius, and reads as OUTSIDE the usable
+    // area will sit there re-asking the same question forever. That is exactly
+    // "the plane hovers where it is supposed to drop".
+    //
+    // We evaluate the same predicate here, one hook earlier in the same tick,
+    // against the same coordinates — the plane cannot move between 0x415997 and
+    // 0x4159F0 — so the logged answer is the answer the engine is about to act
+    // on, without claiming another address.
+    bool PlaneInUsableArea(AircraftClass* pPlane)
+    {
+        return pPlane && MapClass::Instance.IsWithinUsableArea(pPlane->GetCoords());
+    }
+
+    // The map geometry the usable-area test is built from, printed once, the
+    // first time a plane gets stuck. Without it a STUCK line says a plane was
+    // outside the usable area but not by how much, and "was it near the edge?"
+    // is the whole question.
+    //
+    // ⚠ Field semantics are NOT claimed here. The engine's test reads
+    // MapClass+0xF4/0xFC/0x100/0x104/0x108 and combines them with the cell's
+    // Level; which of MapRect and VisibleRect each belongs to is not something
+    // this diagnostic needs to assert, so both are printed verbatim and the
+    // reading is left to whoever compares them against the plane's cell.
+    void LogUsableAreaOnce()
+    {
+        static bool s_done = false;
+        if (s_done)
+            return;
+
+        s_done = true;
+
+        auto const& map = MapClass::Instance;
+        Debug::Log("[SuperWeaponExt] para map geometry: MapRect=(%d,%d %dx%d) "
+                   "VisibleRect=(%d,%d %dx%d) MapCoordBounds=(L%d T%d R%d B%d)\n",
+                   map.MapRect.X, map.MapRect.Y,
+                   map.MapRect.Width, map.MapRect.Height,
+                   map.VisibleRect.X, map.VisibleRect.Y,
+                   map.VisibleRect.Width, map.VisibleRect.Height,
+                   map.MapCoordBounds.Left, map.MapCoordBounds.Top,
+                   map.MapCoordBounds.Right, map.MapCoordBounds.Bottom);
+    }
+
+    // Per-plane trace. Throttled per plane rather than globally, so a five-plane
+    // drop yields five interleaved stories rather than one.
+    //
+    // Logged periodically AND on any change of the two things that decide the
+    // outcome — whether the usable-area gate is open, and how many passengers
+    // are left. A hover is a plane that keeps existing while nothing advances,
+    // which a once-per-plane line cannot show; a partial payload is a drop
+    // sequence that stops mid-way, which only an edge-triggered line pins to a
+    // frame.
+    void TraceParadropPlane(AircraftClass* pPlane, int distance, int radius,
+                            const char* source, bool drop)
+    {
+        if (!pPlane)
+            return;
+
+        struct Seen
+        {
+            AircraftClass* Plane;
+            int  LastFrame;
+            int  LastPax;
+            bool LastUsable;
+            bool Verdict;     // the stuck explanation has been printed once
+        };
+        static std::vector<Seen> s_seen;
+
+        const int  frame  = Unsorted::CurrentFrame;
+        const int  pax    = PassengersAboard(pPlane);
+        const bool usable = PlaneInUsableArea(pPlane);
+
+        constexpr int Every = 15;   // ~1s between idle lines
+
+        Seen* pSeen = nullptr;
+        for (auto& e : s_seen)
+        {
+            if (e.Plane == pPlane)
+            {
+                pSeen = &e;
+                break;
+            }
+        }
+
+        if (!pSeen)
+        {
+            s_seen.push_back(Seen{ pPlane, frame - Every, pax, usable, false });
+            if (s_seen.size() > 256)
+                s_seen.erase(s_seen.begin());
+            pSeen = &s_seen.back();
+        }
+
+        const bool changed = (pax != pSeen->LastPax) || (usable != pSeen->LastUsable);
+        const bool elapsed = (frame < pSeen->LastFrame)
+                          || (frame - pSeen->LastFrame >= Every);
+
+        // The verdict is the one line that answers "why". It is printed the
+        // first time a plane is simultaneously cleared to drop and refused by
+        // the usable-area gate, because from that moment nothing else in the
+        // mission can advance.
+        const bool stuck = drop && !usable;
+        if (stuck && !pSeen->Verdict)
+        {
+            pSeen->Verdict = true;
+            LogUsableAreaOnce();
+            Debug::Log("[SuperWeaponExt] para STUCK f%d plane=%p: inside the drop "
+                       "radius (dist=%d <= %d) but MapClass::IsWithinUsableArea"
+                       "(plane coords)=false, so Mission_ParadropOverfly returns "
+                       "5 without calling Paradrop. %d passenger(s) stay aboard "
+                       "and the plane will hover here.\n",
+                       frame, static_cast<void*>(pPlane), distance, radius, pax);
+        }
+
+        if (!changed && !elapsed)
+            return;
+
+        pSeen->LastFrame  = frame;
+        pSeen->LastPax    = pax;
+        pSeen->LastUsable = usable;
+
+        CellStruct tgt{};
+        auto const pTgtCell = TargetCellOf(pPlane, tgt);
+
+        const int land   = pTgtCell ? static_cast<int>(pTgtCell->LandType) : -1;
+        const int level  = pTgtCell ? pTgtCell->Level : -1;
+        const int bridge = pTgtCell ? (pTgtCell->ContainsBridge() ? 1 : 0) : -1;
+
+        // Where the plane itself is, which is what the usable-area gate reads.
+        const CellStruct here = CellClass::Coord2Cell(pPlane->GetCoords());
+        auto const pHereCell  = MapClass::Instance.TryGetCellAt(here);
+        const int hereLevel   = pHereCell ? pHereCell->Level : -1;
+
+        Debug::Log("[SuperWeaponExt] para f%d plane=%p %s pax=%d mission=%d "
+                   "h=%d passes=%d locked=%d dist=%d radius=%d(%s) drop=%d "
+                   "usable=%d at=(%d,%d) atLevel=%d tgt=(%d,%d) land=%d(%s) "
+                   "tgtLevel=%d bridge=%d%s\n",
+                   frame, static_cast<void*>(pPlane),
+                   pPlane->Type ? pPlane->Type->ID : "?",
+                   pax,
+                   static_cast<int>(pPlane->CurrentMission),
+                   pPlane->GetHeight(),
+                   static_cast<int>(pPlane->NumParadropsLeft),
+                   pPlane->IsLocked ? 1 : 0,
+                   distance, radius, source, drop ? 1 : 0,
+                   usable ? 1 : 0,
+                   here.X, here.Y, hereLevel,
+                   tgt.X, tgt.Y, land, LandName(land), level, bridge,
+                   stuck ? "  <-- HOVERING" : "");
     }
 
     // Shared decision for the paradrop test site.
@@ -604,54 +802,22 @@ namespace
         const bool drop = distance <= radius;
 
         // ---------------------------------------------------------------------
-        // DIAGNOSTIC: why is a plane hovering instead of releasing?
+        // TRACE: what is this plane doing, and why.
         //
-        // Reported symptom: planes hover EXACTLY where they should release. That
-        // is a different failure from overshooting the window -- the plane
-        // arrives, our test says yes, and AircraftClass::Paradrop (0x415C60,
-        // reached via 0x4159C8) then fails to place anybody, so nothing advances
-        // and the plane holds position.
+        // Logged periodically per plane (not once), because a HOVER is a plane
+        // that keeps existing while nothing advances -- a single line at the
+        // moment of arrival cannot show a stall, only its beginning.
         //
-        // This hook runs for EVERY paradrop plane in the game, vanilla included,
-        // so the question is answerable from one ordinary run instead of cycling
-        // DLLs in and out of the injection list.
+        // ⚠ The previous version cast the plane's Target to ObjectClass* and got
+        // null on 28 of 29 lines: a paradrop target is a CELL, and CellClass is
+        // not an ObjectClass. GetCoords() is virtual on AbstractClass, so going
+        // through that resolves both cells and objects.
         //
-        //   drop=1 -> release was authorised; a hover after this is downstream in
-        //             Paradrop(), and targetLand says whether terrain is why
-        //   drop=0 -> never satisfied the radius; an entirely different problem
-        //
-        // Infantry cannot be placed on Water or Rock, which is the cliff theory
-        // in testable form.
+        // `pax` is the number still aboard. That is the number that matters: a
+        // plane which releases part of its payload and then hovers is a plane
+        // whose drop loop stopped with pax > 0.
         // ---------------------------------------------------------------------
-        if (pPlane && !AlreadySurveyed(pPlane))
-        {
-            const char* landName = "none";
-            int landVal = -1, level = -1, bridge = -1;
-
-            if (auto const pTarget = abstract_cast<ObjectClass*>(pPlane->Target))
-            {
-                const auto cell = CellClass::Coord2Cell(pTarget->GetCoords());
-                if (auto const pCell = MapClass::Instance.TryGetCellAt(cell))
-                {
-                    landVal = static_cast<int>(pCell->LandType);
-                    level   = pCell->Level;
-                    bridge  = pCell->ContainsBridge() ? 1 : 0;
-
-                    static const char* const kLand[] = {
-                        "Clear", "Road", "Water", "Rock", "Wall",
-                        "Tiberium", "Beach", "Rough", "Ice", "Railroad" };
-
-                    if (landVal >= 0 && landVal < 10)
-                        landName = kLand[landVal];
-                }
-            }
-
-            Debug::Log("[SuperWeaponExt] paradrop plane %s: drop=%d dist=%d "
-                       "radius=%d (%s) targetLand=%d(%s) level=%d bridge=%d\n",
-                       pPlane->Type ? pPlane->Type->ID : "?",
-                       drop ? 1 : 0, distance, radius, source,
-                       landVal, landName, level, bridge);
-        }
+        TraceParadropPlane(pPlane, distance, radius, source, drop);
 
         // One line per plane, the first time it actually starts dropping. Says
         // WHICH level of the precedence chain won, because the configured value
@@ -707,3 +873,56 @@ DEFINE_HOOK(0x415997, AircraftClass_Mission_ParadropOverfly_Radius, 0x6)
 // Reported in game as "the spyplane circles its target rather than doing a
 // flyby". Do NOT re-add a hook here for paradrop purposes.
 // ============================================================================
+
+// ============================================================================
+// DIAGNOSTIC: one line per passenger actually released.
+//
+// AircraftClass::Paradrop drops EXACTLY ONE passenger per call:
+//
+//   415C60:  sub  esp,0x20            ; <-- our hook, 5 stolen bytes
+//   415C63:  push ebx
+//   415C64:  push esi                 ; 5 bytes end here; 0x415C65 is a boundary
+//   415C66:  mov  edi,ecx             ; ecx = AircraftClass* this
+//   415C68:  lea  ecx,[edi+0x114]     ; &this->Passengers
+//   415C6E:  call 0x473430            ; RemoveFirstPassenger
+//   415C73:  mov  esi,eax
+//   415C77:  je   0x415ECD            ; nobody aboard -> bail
+//   415C7D:  mov  ebx,[edi+0x2FC]     ; a counter, decremented per release;
+//   415C89:  dec  ebx                 ;   its low bit picks the drop side
+//   415CA6:  ...                      ; <-- Antares' AircraftClass_Paradrop_Units
+//
+// So a five-man payload needs five separate calls, one per mission tick, and
+// the mission re-ticks every 5 frames. "The plane deployed a fraction of its
+// payload" is therefore the same event as "the plane stopped dropping": the
+// sequence was interrupted between releases. Pairing these RELEASE lines with
+// the `para` state lines above shows exactly which release was the last one and
+// what the plane's state was at that moment.
+//
+// ⚠ Address availability. 0x415C60 is the function ENTRY and is unclaimed:
+// Antares holds 0x415CA6 (AircraftClass_Paradrop_Units) and 0x415DF6
+// (AircraftClass_Paradrop_Carryall), both well past our 5-byte window, and the
+// encyclopedia registry lists nothing else between 0x415A7A and 0x415CA6. The
+// hook returns 0 so the stolen bytes run and the drop proceeds untouched — this
+// observes, it does not decide.
+// ============================================================================
+DEFINE_HOOK(0x415C60, AircraftClass_Paradrop_Trace, 0x5)
+{
+    GET(AircraftClass*, pThis, ECX);
+
+    if (pThis)
+    {
+        const CellStruct here = CellClass::Coord2Cell(pThis->GetCoords());
+
+        Debug::Log("[SuperWeaponExt] para RELEASE f%d plane=%p %s paxBefore=%d "
+                   "at=(%d,%d) h=%d passes=%d counter[+0x2FC]=%d\n",
+                   Unsorted::CurrentFrame, static_cast<void*>(pThis),
+                   pThis->Type ? pThis->Type->ID : "?",
+                   pThis->Passengers.NumPassengers,
+                   here.X, here.Y, pThis->GetHeight(),
+                   static_cast<int>(pThis->NumParadropsLeft),
+                   *reinterpret_cast<int*>(
+                       reinterpret_cast<unsigned char*>(pThis) + 0x2FC));
+    }
+
+    return 0;
+}
