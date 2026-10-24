@@ -27,31 +27,49 @@
  * HOUSE (`IsControlledByHuman`), which is synced state and admits no ambiguity.
  *
  * ============================================================================
- * TWO STAGES, FOUR CHECKS
+ * TWO STAGES, AND WHY THE CHECKS ARE PER AXIS
  * ============================================================================
  *
  * A scattered shot has two interesting cells: the one targeting chose, and the
- * one the dice moved it to. Inhibitors and designators can be checked at either
- * or both, so each gets its own key (plus a `.Human` twin):
+ * one the dice moved it to. Inhibitors and designators can be enforced at
+ * either, or both — and, at the random stage, PER AXIS:
  *
- *     AITargeting.TargetRequireDesignator=yes   ; the PRE-random cell
- *     AITargeting.TargetAvoidInhibitors=yes
- *     AITargeting.RandomRequireDesignator=yes   ; the POST-random cell
- *     AITargeting.RandomAvoidInhibitors=yes
+ *     AITargeting.RandomX.TargetRequireDesignator=yes   ; the PRE-random cell
+ *     AITargeting.RandomX.TargetAvoidInhibitors=yes
+ *     AITargeting.RandomX.RandomRequireDesignator=yes   ; the POST-random cell
+ *     AITargeting.RandomX.RandomAvoidInhibitors=yes
+ *     ...and the same four on RandomY, and a `.Human` twin for each.
  *
- * All default to `yes`, which is the strict reading: the shot must be legal
- * both where it was aimed and where it lands.
+ * ⚠ A PER-AXIS CHECK IS NOT A CHECK ON HALF A CELL. "Is a designator in range"
+ * has no X-only answer. What an axis's flag actually says is **whether that
+ * axis's DISPLACEMENT has to stay legal**, and it is answered by probing the
+ * aim point displaced on THAT AXIS ALONE:
  *
- * ⚠ The checks are PER CELL, not per axis. A designator check asks "is this
- * cell within range of a designator", and that question has no X-only or
- * Y-only answer — which is why there is one key per check rather than one per
- * axis. A per-axis pair would be two keys asking the same question about the
- * same cell, needing a tie-break rule no modder could predict.
+ *     both axes enabled ->  probe (x + rollX, y + rollY)   the whole move
+ *     X only            ->  probe (x + rollX, y       )    X must stay legal
+ *     Y only            ->  probe (x       , y + rollY)    Y must stay legal
+ *     neither           ->  no probe
  *
- * Failing the TARGET stage refuses the launch outright: the shot was aimed
- * somewhere it may not go. Failing the RANDOM stage re-rolls — see
- * ResolveScatter — and only refuses when no roll works and the unscattered
- * cell will not do either.
+ * That is what makes the split worth having. `RandomY=-5,5` honouring
+ * designators while `RandomX=-25,25` ignores them means: the shot may wander
+ * twenty-five cells sideways, but its vertical displacement must keep it on
+ * covered ground. One flag cannot express that; two can.
+ *
+ * Where both are enabled the probe is the whole displacement, which is strictly
+ * the harshest of the three — so "the reading that forbids wins" holds, and the
+ * all-yes default is exactly a plain check of the cell the shot lands on.
+ *
+ * The TARGET stage has no displacement, so all three enabled cases collapse to
+ * the aim point and the pair behaves as a simple OR. PlanProbe below produces
+ * that for free, which is why one function serves both stages.
+ *
+ * Designators and inhibitors are planned SEPARATELY: their axis flags are
+ * independent, so a launch can end up probing designators at (x, y+rollY) and
+ * inhibitors at (x+rollX, y+rollY) in the same evaluation.
+ *
+ * Failing the TARGET stage refuses the launch: the shot was aimed somewhere it
+ * may not go. Failing the RANDOM stage re-rolls — see ResolveScatter — and only
+ * refuses when no roll works and the unscattered cell will not do either.
  *
  * ============================================================================
  * ⚠ DETERMINISM — read before touching the adapter
@@ -131,24 +149,62 @@ namespace SWExt
         }
     };
 
-    // Which constraints are enforced, and at which of the two stages.
-    struct ScatterChecks
+    // Which constraints this ONE AXIS insists on keeping legal.
+    struct ScatterAxisChecks
     {
         bool TargetRequireDesignator = true;
         bool TargetAvoidInhibitors   = true;
         bool RandomRequireDesignator = true;
         bool RandomAvoidInhibitors   = true;
+    };
+
+    struct ScatterChecks
+    {
+        ScatterAxisChecks X;
+        ScatterAxisChecks Y;
 
         bool AnyTarget() const
         {
-            return this->TargetRequireDesignator || this->TargetAvoidInhibitors;
+            return this->X.TargetRequireDesignator || this->Y.TargetRequireDesignator
+                || this->X.TargetAvoidInhibitors   || this->Y.TargetAvoidInhibitors;
         }
 
         bool AnyRandom() const
         {
-            return this->RandomRequireDesignator || this->RandomAvoidInhibitors;
+            return this->X.RandomRequireDesignator || this->Y.RandomRequireDesignator
+                || this->X.RandomAvoidInhibitors   || this->Y.RandomAvoidInhibitors;
         }
     };
+
+    // Where one per-axis-gated check should be evaluated.
+    //
+    // `(x,y)` is the aim point and `(cx,cy)` the candidate. See the header
+    // comment: an axis flag means "this axis's displacement must stay legal",
+    // so an enabled axis contributes its own coordinate to the probe and a
+    // disabled one contributes the aim point's.
+    //
+    // With `(cx,cy) == (x,y)` — the target stage, where nothing has moved —
+    // every enabled combination yields the aim point, so the two flags behave
+    // as a plain OR without that needing its own code path.
+    struct ProbePoint
+    {
+        int  X = 0;
+        int  Y = 0;
+        bool Enabled = false;
+    };
+
+    inline ProbePoint PlanProbe(bool enableX, bool enableY,
+                                int x, int y, int cx, int cy)
+    {
+        if (enableX && enableY)
+            return ProbePoint{ cx, cy, true };
+        if (enableX)
+            return ProbePoint{ cx, y, true };
+        if (enableY)
+            return ProbePoint{ x, cy, true };
+
+        return ProbePoint{ x, y, false };
+    }
 
     struct ScatterSide
     {

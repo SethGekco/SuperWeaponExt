@@ -150,33 +150,48 @@ namespace
         }
     }
 
-    // `AITargeting.<name>` for the AI side, `AITargeting.<name>.Human` for the
-    // human side. The suffix rule is uniform across every key in this family,
-    // and an absent `.Human` key inherits whatever the AI side resolved to.
-    void ReadScatterSide(CCINIClass* pINI, const char* section,
-                         const char* suffix, SWExt::ScatterSide& into)
+    // The four per-axis check flags for one axis of one side.
+    //
+    // Key shape, uniform and mechanical:
+    //     AITargeting.Random{X|Y}.{Target|Random}{RequireDesignator|AvoidInhibitors}[.Human]
+    void ReadScatterAxisChecks(CCINIClass* pINI, const char* section,
+                               const char* axis, const char* suffix,
+                               SWExt::ScatterAxisChecks& into)
     {
-        char key[128] = {};
-
-        auto const band = [&](const char* name, int& lo, int& hi)
-        {
-            _snprintf_s(key, sizeof(key), "AITargeting.%s%s", name, suffix);
-            ReadScatterBand(pINI, section, key, lo, hi);
-        };
+        char key[160] = {};
 
         auto const flag = [&](const char* name, bool& out)
         {
-            _snprintf_s(key, sizeof(key), "AITargeting.%s%s", name, suffix);
+            _snprintf_s(key, sizeof(key), "AITargeting.Random%s.%s%s",
+                        axis, name, suffix);
             out = pINI->ReadBool(section, key, out);
         };
 
-        band("RandomX", into.Band.MinX, into.Band.MaxX);
-        band("RandomY", into.Band.MinY, into.Band.MaxY);
+        flag("TargetRequireDesignator", into.TargetRequireDesignator);
+        flag("TargetAvoidInhibitors",   into.TargetAvoidInhibitors);
+        flag("RandomRequireDesignator", into.RandomRequireDesignator);
+        flag("RandomAvoidInhibitors",   into.RandomAvoidInhibitors);
+    }
 
-        flag("TargetRequireDesignator", into.Checks.TargetRequireDesignator);
-        flag("TargetAvoidInhibitors",   into.Checks.TargetAvoidInhibitors);
-        flag("RandomRequireDesignator", into.Checks.RandomRequireDesignator);
-        flag("RandomAvoidInhibitors",   into.Checks.RandomAvoidInhibitors);
+    // `AITargeting.*` for the AI side, `AITargeting.*.Human` for the human
+    // side. The suffix rule is uniform across every key in this family, and an
+    // absent `.Human` key inherits whatever the AI side resolved to.
+    void ReadScatterSide(CCINIClass* pINI, const char* section,
+                         const char* suffix, SWExt::ScatterSide& into)
+    {
+        char key[160] = {};
+
+        auto const band = [&](const char* axis, int& lo, int& hi)
+        {
+            _snprintf_s(key, sizeof(key), "AITargeting.Random%s%s", axis, suffix);
+            ReadScatterBand(pINI, section, key, lo, hi);
+        };
+
+        band("X", into.Band.MinX, into.Band.MaxX);
+        band("Y", into.Band.MinY, into.Band.MaxY);
+
+        ReadScatterAxisChecks(pINI, section, "X", suffix, into.Checks.X);
+        ReadScatterAxisChecks(pINI, section, "Y", suffix, into.Checks.Y);
 
         into.Band.Normalise();
     }
@@ -216,17 +231,25 @@ namespace
 
         auto const describe = [&](const SWExt::ScatterSide& side, const char* who)
         {
-            Debug::Log("[SuperWeaponExt] [%s] %s scatter: X %d..%d, Y %d..%d "
-                       "cells; aim point needs designator %d / avoids inhibitors "
-                       "%d, scattered cell needs designator %d / avoids "
-                       "inhibitors %d\n",
-                       section, who,
-                       side.Band.MinX, side.Band.MaxX,
-                       side.Band.MinY, side.Band.MaxY,
-                       side.Checks.TargetRequireDesignator ? 1 : 0,
-                       side.Checks.TargetAvoidInhibitors ? 1 : 0,
-                       side.Checks.RandomRequireDesignator ? 1 : 0,
-                       side.Checks.RandomAvoidInhibitors ? 1 : 0);
+            // One line per axis: the axis flags are what decide WHICH cell each
+            // check probes, so printing them per axis is the only way the log
+            // explains a refusal.
+            auto const axis = [&](const char* name, int lo, int hi,
+                                  const SWExt::ScatterAxisChecks& c)
+            {
+                Debug::Log("[SuperWeaponExt] [%s] %s scatter %s: %d..%d cells; "
+                           "aim point needs designator %d / avoids inhibitors %d, "
+                           "displacement needs designator %d / avoids inhibitors "
+                           "%d\n",
+                           section, who, name, lo, hi,
+                           c.TargetRequireDesignator ? 1 : 0,
+                           c.TargetAvoidInhibitors ? 1 : 0,
+                           c.RandomRequireDesignator ? 1 : 0,
+                           c.RandomAvoidInhibitors ? 1 : 0);
+            };
+
+            axis("X", side.Band.MinX, side.Band.MaxX, side.Checks.X);
+            axis("Y", side.Band.MinY, side.Band.MaxY, side.Checks.Y);
         };
 
         describe(into.AI, "AI");

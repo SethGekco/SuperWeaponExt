@@ -106,6 +106,34 @@ namespace
         return pExt->Scatter.For(pHouse->IsControlledByHuman());
     }
 
+    // Evaluate one per-axis-gated constraint at whichever cell its axis flags
+    // select. Returns true when the check is off, or on and satisfied.
+    //
+    // `(ax,ay)` is the aim point, `(cx,cy)` the candidate. At the target stage
+    // the caller passes the aim point as both, which collapses every enabled
+    // combination onto the aim point -- see PlanProbe.
+    bool ProbePasses(const SWTypeExt::ExtData* pExt, HouseClass* pHouse,
+                     bool enableX, bool enableY,
+                     int ax, int ay, int cx, int cy,
+                     bool designators, bool inhibitors)
+    {
+        auto const probe = SWExt::PlanProbe(enableX, enableY, ax, ay, cx, cy);
+        if (!probe.Enabled)
+            return true;
+
+        const CellStruct cell{ static_cast<short>(probe.X),
+                               static_cast<short>(probe.Y) };
+
+        // A probe point is the aim point's coordinate on any axis that is not
+        // displaced and a clamped candidate coordinate on any that is, so it is
+        // always in bounds -- but an in-bounds cell can still be illegal, and a
+        // check cannot be satisfied at a cell that does not exist.
+        if (!MapClass::Instance.CoordinatesLegal(cell))
+            return false;
+
+        return pExt->AllowsFireAt(pHouse, cell, designators, inhibitors);
+    }
+
     // Stage 1: may this superweapon be aimed here at all?
     //
     // Checked against the cell TARGETING chose, before any dice. A failure here
@@ -113,14 +141,19 @@ namespace
     // amount of scattering makes that legitimate.
     bool PassesTargetStage(const SWTypeExt::ExtData* pExt, HouseClass* pHouse,
                            const SWExt::ScatterChecks& checks,
-                           const CellStruct& cell)
+                           const CellStruct& aim)
     {
         if (!checks.AnyTarget())
             return true;
 
-        return pExt->AllowsFireAt(pHouse, cell,
-                                  checks.TargetRequireDesignator,
-                                  checks.TargetAvoidInhibitors);
+        return ProbePasses(pExt, pHouse,
+                           checks.X.TargetRequireDesignator,
+                           checks.Y.TargetRequireDesignator,
+                           aim.X, aim.Y, aim.X, aim.Y, true, false)
+            && ProbePasses(pExt, pHouse,
+                           checks.X.TargetAvoidInhibitors,
+                           checks.Y.TargetAvoidInhibitors,
+                           aim.X, aim.Y, aim.X, aim.Y, false, true);
     }
 
     // Move the target cell, in place, before anything downstream reads it.
@@ -158,9 +191,16 @@ namespace
             return random.RandomRanged(lo, hi);
         };
 
+        const int aimX = cell.X;
+        const int aimY = cell.Y;
+
         // A candidate must be a real cell AND satisfy whatever the random stage
-        // requires. Both halves are synced, so every client accepts and rejects
-        // the same candidates and therefore makes the same number of draws.
+        // requires -- with designators and inhibitors planning their probes
+        // SEPARATELY, because their axis flags are independent. One evaluation
+        // can therefore test two different cells.
+        //
+        // Both halves are synced, so every client accepts and rejects the same
+        // candidates and therefore makes the same number of draws.
         auto const accept = [&](int cx, int cy)
         {
             const CellStruct candidate{ static_cast<short>(cx),
@@ -169,15 +209,19 @@ namespace
             if (!MapClass::Instance.CoordinatesLegal(candidate))
                 return false;
 
-            if (!side.Checks.AnyRandom())
-                return true;
+            auto const& c = side.Checks;
 
-            return pExt->AllowsFireAt(pHouse, candidate,
-                                      side.Checks.RandomRequireDesignator,
-                                      side.Checks.RandomAvoidInhibitors);
+            return ProbePasses(pExt, pHouse,
+                               c.X.RandomRequireDesignator,
+                               c.Y.RandomRequireDesignator,
+                               aimX, aimY, cx, cy, true, false)
+                && ProbePasses(pExt, pHouse,
+                               c.X.RandomAvoidInhibitors,
+                               c.Y.RandomAvoidInhibitors,
+                               aimX, aimY, cx, cy, false, true);
         };
 
-        auto const out = SWExt::ResolveScatter(side.Band, cell.X, cell.Y,
+        auto const out = SWExt::ResolveScatter(side.Band, aimX, aimY,
                                                limits, roll, accept);
 
         if (!out.Fire)
@@ -187,7 +231,7 @@ namespace
                        "%d tries, and the aim point (%d,%d) does not either; "
                        "refused\n",
                        pType->ID, pHouse->ArrayIndex, who, out.Attempts,
-                       cell.X, cell.Y);
+                       aimX, aimY);
             return false;
         }
 
@@ -196,7 +240,7 @@ namespace
             Debug::Log("[SuperWeaponExt] %s house %d (%s): no scattered cell "
                        "passed after %d tries; firing at the aim point (%d,%d)\n",
                        pType->ID, pHouse->ArrayIndex, who, out.Attempts,
-                       cell.X, cell.Y);
+                       aimX, aimY);
             return true;
         }
 
@@ -205,7 +249,7 @@ namespace
 
         Debug::Log("[SuperWeaponExt] %s house %d (%s): target (%d,%d) scattered "
                    "to (%d,%d) on try %d%s\n",
-                   pType->ID, pHouse->ArrayIndex, who, cell.X, cell.Y,
+                   pType->ID, pHouse->ArrayIndex, who, aimX, aimY,
                    out.X, out.Y, out.Attempts,
                    out.Clamped ? " [clamped to map]" : "");
 

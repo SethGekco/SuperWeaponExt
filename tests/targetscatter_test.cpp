@@ -244,17 +244,146 @@ static void Test_SidesAndDefaults()
     CHECK(!human.For(false).Band.Active(), "without touching the AI side");
 
     const ScatterChecks def;
-    CHECK(def.TargetRequireDesignator, "designators are required at the aim point by default");
-    CHECK(def.TargetAvoidInhibitors,   "inhibitors are avoided at the aim point by default");
-    CHECK(def.RandomRequireDesignator, "and at the scattered cell");
-    CHECK(def.RandomAvoidInhibitors,   "likewise inhibitors");
+    CHECK(def.X.TargetRequireDesignator && def.Y.TargetRequireDesignator,
+          "designators are required at the aim point by default, on both axes");
+    CHECK(def.X.RandomAvoidInhibitors && def.Y.RandomAvoidInhibitors,
+          "and inhibitors avoided at the scattered cell");
     CHECK(def.AnyTarget() && def.AnyRandom(), "so both stages are live by default");
 
     ScatterChecks off;
-    off.TargetRequireDesignator = false;
-    off.TargetAvoidInhibitors   = false;
-    CHECK(!off.AnyTarget(), "turning both target checks off skips the stage");
+    off.X.TargetRequireDesignator = false;
+    off.Y.TargetRequireDesignator = false;
+    off.X.TargetAvoidInhibitors   = false;
+    off.Y.TargetAvoidInhibitors   = false;
+    CHECK(!off.AnyTarget(), "turning the target checks off on both axes skips the stage");
     CHECK(off.AnyRandom(),  "without disturbing the random stage");
+
+    ScatterChecks half;
+    half.X.TargetRequireDesignator = false;
+    CHECK(half.AnyTarget(), "one axis still wanting a check keeps the stage alive");
+}
+
+// -----------------------------------------------------------------------------
+static void Test_ProbePlanning()
+{
+    std::printf("an axis flag means 'this axis's displacement must stay legal'\n");
+
+    // Aim point (50,60), candidate (75,65): +25 on X, +5 on Y.
+    const int ax = 50, ay = 60, cx = 75, cy = 65;
+
+    auto const both = PlanProbe(true, true, ax, ay, cx, cy);
+    CHECK(both.Enabled, "both axes enabled is a live probe");
+    CHECK(both.X == 75 && both.Y == 65, "...of the whole displacement");
+
+    auto const xOnly = PlanProbe(true, false, ax, ay, cx, cy);
+    CHECK(xOnly.Enabled, "X alone is a live probe");
+    CHECK(xOnly.X == 75 && xOnly.Y == 60, "...of the X displacement only");
+
+    auto const yOnly = PlanProbe(false, true, ax, ay, cx, cy);
+    CHECK(yOnly.Enabled, "Y alone is a live probe");
+    CHECK(yOnly.X == 50 && yOnly.Y == 65, "...of the Y displacement only");
+
+    auto const none = PlanProbe(false, false, ax, ay, cx, cy);
+    CHECK(!none.Enabled, "neither axis means no probe at all");
+}
+
+// -----------------------------------------------------------------------------
+static void Test_ProbePlanningCollapsesAtTheTargetStage()
+{
+    std::printf("with no displacement the two flags behave as a plain OR\n");
+
+    // The target stage passes the aim point as the candidate: nothing moved.
+    const int ax = 50, ay = 60;
+
+    for (int i = 0; i < 3; ++i)
+    {
+        const bool ex = (i != 2);
+        const bool ey = (i != 1);
+
+        auto const probe = PlanProbe(ex, ey, ax, ay, ax, ay);
+        CHECK(probe.Enabled, "any enabled axis gives a live probe");
+        CHECK(probe.X == 50 && probe.Y == 60, "...always at the aim point");
+    }
+
+    CHECK(!PlanProbe(false, false, ax, ay, ax, ay).Enabled,
+          "and neither axis still means no probe");
+}
+
+// -----------------------------------------------------------------------------
+static void Test_RexsCase_WideXFreeNarrowYConstrained()
+{
+    std::printf("the case this split exists for: X wanders, Y stays covered\n");
+
+    // RandomX=-25,25 ignoring constraints; RandomY=-5,5 honouring them.
+    // A designator covers a horizontal strip: any cell with |y - 60| <= 3.
+    auto const band = Band(-25, 25, -5, 5);
+    auto const covered = [](int, int y) { return y >= 57 && y <= 63; };
+
+    // Roll far out on X and just inside on Y.
+    {
+        auto const probe = PlanProbe(/*X*/ false, /*Y*/ true, 50, 60, 75, 62);
+        CHECK(probe.X == 50 && probe.Y == 62, "only the Y displacement is probed");
+        CHECK(covered(probe.X, probe.Y), "which is inside the strip, so it passes");
+    }
+
+    // ...and the resolver accepts the far-out X because X is not probed.
+    FakeRoller roll{ { 25, 2 }, 0, 0, 0 };
+    auto const r = ResolveScatter(band, 50, 60, Wide(), std::ref(roll),
+        [&](int candX, int candY)
+        {
+            auto const probe = PlanProbe(false, true, 50, 60, candX, candY);
+            return !probe.Enabled || covered(probe.X, probe.Y);
+        });
+
+    CHECK(r.Fire, "it fires");
+    CHECK(r.X == 75, "25 cells sideways, unconstrained");
+    CHECK(r.Y == 62, "and 2 cells down, which stayed on covered ground");
+    CHECK(r.Attempts == 1, "accepted first try");
+
+    // The same roll with BOTH axes enabled probes the real landing cell, which
+    // is outside the strip on X... except the strip ignores X, so to show the
+    // difference use a designator that covers a BOX around the aim point.
+    auto const box = [](int x, int y)
+    {
+        return x >= 45 && x <= 55 && y >= 57 && y <= 63;
+    };
+
+    FakeRoller roll2{ {}, 0, 0, 0 };   // every roll is 0,0 -> the aim point
+    auto const strict = ResolveScatter(band, 50, 60, Wide(), std::ref(roll2),
+        [&](int candX, int candY)
+        {
+            auto const probe = PlanProbe(true, true, 50, 60, candX, candY);
+            return !probe.Enabled || box(probe.X, probe.Y);
+        });
+
+    CHECK(strict.Fire, "with both axes enabled a zero roll still passes");
+    CHECK(strict.X == 50 && strict.Y == 60, "landing on the aim point");
+
+    FakeRoller roll3{ { 25, 0 }, 0, 0, 25 };   // always far out on X
+    auto const refused = ResolveScatter(band, 50, 60, Wide(), std::ref(roll3),
+        [&](int candX, int candY)
+        {
+            auto const probe = PlanProbe(true, true, 50, 60, candX, candY);
+            return !probe.Enabled || box(probe.X, probe.Y);
+        });
+
+    CHECK(refused.UsedOriginal, "with both enabled, a far-out X is rejected every try");
+    CHECK(refused.Fire, "and the aim point, which is inside the box, is used");
+    CHECK(refused.X == 50 && refused.Y == 60, "so the shot lands where it was aimed");
+}
+
+// -----------------------------------------------------------------------------
+static void Test_DesignatorAndInhibitorPlanIndependently()
+{
+    std::printf("the two constraint kinds plan their probes separately\n");
+
+    // Designators: Y only. Inhibitors: both axes.
+    auto const desig = PlanProbe(false, true, 50, 60, 75, 65);
+    auto const inhib = PlanProbe(true,  true, 50, 60, 75, 65);
+
+    CHECK(desig.X == 50 && desig.Y == 65, "the designator probe follows Y alone");
+    CHECK(inhib.X == 75 && inhib.Y == 65, "the inhibitor probe follows both");
+    CHECK(desig.X != inhib.X, "so one evaluation can probe two different cells");
 }
 
 // -----------------------------------------------------------------------------
@@ -402,6 +531,10 @@ int main()
     Test_ClampCanCancelAShift();
     Test_UnusableBoundsAreIgnored();
     Test_SidesAndDefaults();
+    Test_ProbePlanning();
+    Test_ProbePlanningCollapsesAtTheTargetStage();
+    Test_RexsCase_WideXFreeNarrowYConstrained();
+    Test_DesignatorAndInhibitorPlanIndependently();
     Test_ResolveTakesTheFirstAcceptableRoll();
     Test_ResolveRerollsPastRefusedCells();
     Test_BothAxesDrawnEvenWhenDegenerate();

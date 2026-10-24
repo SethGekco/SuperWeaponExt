@@ -1174,36 +1174,70 @@ Which side a launch uses is decided by the **owning house** —
 
 The axes are independent: setting only `RandomX` leaves the Y coordinate alone.
 
-### Two stages, four checks
+### Two stages, and why the checks are per axis
 
 A scattered shot has two interesting cells: the one targeting chose, and the one
 the dice moved it to. Inhibitors and designators can be enforced at either, or
-both, or neither.
+both — and at the random stage, **per axis**.
 
-| Key | Default | Checked against |
+| Key | Default | Cell |
 |---|---|---|
-| `AITargeting.TargetRequireDesignator` | `yes` | the **pre-random** cell — a designator must be in range of where the shot was aimed |
-| `AITargeting.TargetAvoidInhibitors` | `yes` | the **pre-random** cell — no inhibitor may cover where it was aimed |
-| `AITargeting.RandomRequireDesignator` | `yes` | the **post-random** cell — a designator must be in range of where it lands |
-| `AITargeting.RandomAvoidInhibitors` | `yes` | the **post-random** cell — no inhibitor may cover where it lands |
+| `AITargeting.RandomX.TargetRequireDesignator` | `yes` | the **pre-random** cell |
+| `AITargeting.RandomX.TargetAvoidInhibitors` | `yes` | the **pre-random** cell |
+| `AITargeting.RandomX.RandomRequireDesignator` | `yes` | the **X displacement** |
+| `AITargeting.RandomX.RandomAvoidInhibitors` | `yes` | the **X displacement** |
 
-Each takes a `.Human` twin, e.g. `AITargeting.RandomAvoidInhibitors.Human=no`.
-That is the eight keys.
+…and the same four on `RandomY`, and a `.Human` twin for every one of the
+eight. Sixteen keys.
 
-> ⚠ **These are per CELL, not per axis.** A designator check asks "is this cell
-> within range of a designator", and that question has no X-only or Y-only
-> answer — so there is one key per check rather than one per axis. A per-axis
-> pair would be two keys asking the same question about the same cell, needing a
-> tie-break rule no modder could predict.
+> ⚠ **A per-axis check is not a check on half a cell.** "Is a designator in
+> range" has no X-only answer. What an axis's flag says is **whether that axis's
+> displacement has to stay legal**, and it is answered by probing the aim point
+> displaced on *that axis alone*:
+
+| Enabled | Probed cell |
+|---|---|
+| both axes | `(x + rollX, y + rollY)` — the whole move |
+| X only | `(x + rollX, y)` — the X displacement must stay legal |
+| Y only | `(x, y + rollY)` — the Y displacement must stay legal |
+| neither | nothing is probed |
+
+**That is what the split is for.** This:
+
+```ini
+AITargeting.RandomX=-25,25
+AITargeting.RandomY=-5,5
+AITargeting.RandomX.RandomRequireDesignator=no
+AITargeting.RandomX.RandomAvoidInhibitors=no
+AITargeting.RandomY.RandomRequireDesignator=yes
+AITargeting.RandomY.RandomAvoidInhibitors=yes
+```
+
+means: the shot may wander twenty-five cells sideways wherever it likes, but its
+*vertical* displacement must keep it on designated, uninhibited ground. One flag
+cannot express that; two can.
+
+Where both axes are enabled the probe is the whole displacement, which is the
+harshest of the three forms — so the reading that forbids still wins, and the
+all-`yes` default is exactly a plain check of the cell the shot lands on.
+
+**Designators and inhibitors plan separately.** Their axis flags are
+independent, so a single evaluation can probe designators at `(x, y+rollY)` and
+inhibitors at `(x+rollX, y+rollY)`.
+
+**The target stage has no displacement**, so all three enabled cases collapse to
+the aim point and the X/Y pair behaves as a plain OR there — set either to `yes`
+and the aim point is checked.
 
 **What failure does:**
 
 - **Target stage fails** → the launch is **refused**. The shot was aimed
   somewhere it may not go, and no amount of scattering makes that legitimate.
-- **Random stage fails** → **re-roll**, up to 8 times. The first acceptable cell
-  wins. If none is acceptable, the unscattered aim point is tried — held to the
-  *same* random-stage checks, so `RandomRequireDesignator=yes` is not quietly
-  bypassed by an exhausted search. If that fails too, the launch is refused.
+- **Random stage fails** → **re-roll**, up to 8 times. The first acceptable
+  candidate wins. If none is acceptable, the unscattered aim point is tried —
+  held to the *same* random-stage checks, so `RandomRequireDesignator=yes` is
+  not quietly bypassed by an exhausted search. If that fails too, the launch is
+  refused.
 
 Every outcome is logged, including which try succeeded.
 
@@ -1240,10 +1274,19 @@ rolling Y, its band is 0,0" optimisation would cause. Do not add one.
 
 ### What the log says
 
+One line per axis at parse time, because the axis flags are what decide which
+cell each check probes — printing them per axis is the only way the log can
+explain a refusal:
+
 ```
-[SuperWeaponExt] [SOMESW] AI scatter: X -4..4, Y -4..4 cells; aim point needs designator 1 / avoids inhibitors 1, scattered cell needs designator 1 / avoids inhibitors 1
-[SuperWeaponExt] [SOMESW] human scatter: X 0..0, Y 0..0 cells; ...
-[SuperWeaponExt] SOMESW house 2 (AI): target (64,72) scattered to (67,71) on try 1
+[SuperWeaponExt] [SOMESW] AI scatter X: -25..25 cells; aim point needs designator 1 / avoids inhibitors 1, displacement needs designator 0 / avoids inhibitors 0
+[SuperWeaponExt] [SOMESW] AI scatter Y: -5..5 cells; aim point needs designator 1 / avoids inhibitors 1, displacement needs designator 1 / avoids inhibitors 1
+```
+
+then per shot:
+
+```
+[SuperWeaponExt] SOMESW house 2 (AI): target (64,72) scattered to (89,70) on try 1
 [SuperWeaponExt] SOMESW house 2 (AI): target (64,72) scattered to (61,75) on try 3 [clamped to map]
 [SuperWeaponExt] SOMESW house 2 (AI): no scattered cell passed after 8 tries; firing at the aim point (64,72)
 [SuperWeaponExt] SOMESW house 2 (AI): aim point (64,72) fails the target-stage constraints; refused
