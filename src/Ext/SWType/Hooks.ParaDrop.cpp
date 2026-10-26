@@ -612,6 +612,75 @@ namespace
         return viaYRpp;
     }
 
+    // ========================================================================
+    // THE REPAIR for the hovering paradrop plane.
+    //
+    // ⚠ PROVEN IN GAME, 2026-10-25. 18 hover events in one match, every single
+    // one of them `usable=0`, and the boundary is exact: of 217 distinct plane
+    // positions logged, every cell with X+Y <= 220 passed and every cell with
+    // X+Y >= 221 failed. That is the south-east edge of this map's playable
+    // diamond. A plane that overshoots its target across that line is inside
+    // the drop radius and refused by the gate at the same time, which is the
+    // one combination Mission_ParadropOverfly has no exit for:
+    //
+    //     4159F7:  je 0x415A39      ; -> `mov eax,5; ret`. No drop. No new
+    //                               ;    mission. No new destination.
+    //
+    // Every OTHER exit from that function either drops, queues another pass,
+    // or sends the plane home. This one does nothing at all, and the plane is
+    // left holding the rest of its stick.
+    //
+    // THE REPAIR costs no new address and invents no new engine behaviour: our
+    // hook already chooses between `Drop` (0x4159C8) and `KeepFlying`
+    // (0x41599F), so when the gate is shut we answer "not close enough" and the
+    // engine takes the branch it runs thousands of times a match — decrement
+    // the pass, queue ParadropApproach, come around. The dead-end branch is
+    // simply never reached.
+    //
+    // ⚠ WHAT THIS DOES NOT CLAIM. One plane in that log recovered on its own
+    // (f100920 refused, f101034 found a usable cell on the next pass and
+    // finished its payload), so a second pass CAN succeed. The other 14 left
+    // the overfly trace entirely after being refused and never came back, and
+    // this log cannot say whether they were shot down, retreated, or stalled
+    // inside Mission_ParadropApproach — which is a different function and not
+    // instrumented. So this removes the dead-end we can see; it is not yet
+    // proof that nothing downstream also misbehaves.
+    //
+    // ⚠ BOUNDED, because the go-around branch has no natural cap. It reads
+    // NumParadropsLeft and only gives up at zero, and across a whole match that
+    // field was observed at 4 and 5 and never any lower — so nothing guarantees
+    // the engine would ever stop re-approaching. Deferring forever would trade
+    // a plane that hovers for a plane that circles, which is not a trade worth
+    // making blind. After this many deferrals one plane is handed back to the
+    // engine's own behaviour, bug included: a bounded repair that sometimes
+    // falls back beats an unbounded one that might never terminate.
+    constexpr int MaxDeferrals = 3;
+
+    // No INI switch: this DLL has no [General] reader and inventing one for a
+    // single flag is disproportionate. The A/B is the one that has settled
+    // every previous question here — run with the DLL injected and without it.
+    // ========================================================================
+    constexpr bool DeferUnusableDrop = true;
+
+    // How many times we have sent this plane around. Same bounded-registry
+    // shape as the trace's: a recycled pointer at worst inherits a count and
+    // defers a little less, which is harmless.
+    int& DeferralsFor(AircraftClass* pPlane)
+    {
+        struct Entry { AircraftClass* Plane; int Count; };
+        static std::vector<Entry> s_entries;
+
+        for (auto& e : s_entries)
+            if (e.Plane == pPlane)
+                return e.Count;
+
+        s_entries.push_back(Entry{ pPlane, 0 });
+        if (s_entries.size() > 256)
+            s_entries.erase(s_entries.begin());
+
+        return s_entries.back().Count;
+    }
+
     // Is the plane itself standing somewhere the engine will let it drop?
     //
     // ⚠ THIS IS THE GATE THAT CAUSES THE HOVER, and it is not our code.
@@ -731,12 +800,19 @@ namespace
         {
             pSeen->Verdict = true;
             LogUsableAreaOnce();
-            Debug::Log("[SuperWeaponExt] para STUCK f%d plane=%p: inside the drop "
-                       "radius (dist=%d <= %d) but MapClass::IsWithinUsableArea"
-                       "(plane coords)=false, so Mission_ParadropOverfly returns "
-                       "5 without calling Paradrop. %d passenger(s) stay aboard "
-                       "and the plane will hover here.\n",
-                       frame, static_cast<void*>(pPlane), distance, radius, pax);
+            Debug::Log("[SuperWeaponExt] para DEFERRED f%d plane=%p: inside the "
+                       "drop radius (dist=%d <= %d) but MapClass::"
+                       "IsWithinUsableArea(plane coords)=false at (%d,%d). "
+                       "%d passenger(s) aboard. %s\n",
+                       frame, static_cast<void*>(pPlane), distance, radius,
+                       CellClass::Coord2Cell(pPlane->GetCoords()).X,
+                       CellClass::Coord2Cell(pPlane->GetCoords()).Y,
+                       pax,
+                       DeferUnusableDrop
+                         ? "Reporting out-of-range so the engine sends it "
+                           "around again instead of stalling."
+                         : "Repair off: the engine returns 5, does nothing, "
+                           "and the plane hovers here.");
         }
 
         if (!changed && !elapsed)
@@ -773,7 +849,7 @@ namespace
                    usable ? 1 : 0,
                    here.X, here.Y, hereLevel,
                    tgt.X, tgt.Y, land, LandName(land), level, bridge,
-                   stuck ? "  <-- HOVERING" : "");
+                   stuck ? "  <-- GATE REFUSED" : "");
     }
 
     // Shared decision for the paradrop test site.
@@ -818,6 +894,32 @@ namespace
         // whose drop loop stopped with pax > 0.
         // ---------------------------------------------------------------------
         TraceParadropPlane(pPlane, distance, radius, source, drop);
+
+        // THE REPAIR, before anything below treats `drop` as final. See
+        // DeferUnusableDrop above: answering "not close enough" sends the
+        // engine down its own go-around branch instead of into the branch that
+        // does nothing at all.
+        if (drop && DeferUnusableDrop && !PlaneInUsableArea(pPlane))
+        {
+            int& deferrals = DeferralsFor(pPlane);
+            if (deferrals < MaxDeferrals)
+            {
+                ++deferrals;
+                return false;
+            }
+
+            // Exactly once per plane: this runs every five frames, and a
+            // plane that is about to stall would otherwise print forever.
+            if (deferrals == MaxDeferrals)
+            {
+                ++deferrals;
+                Debug::Log("[SuperWeaponExt] para GIVING UP f%d plane=%p: %d "
+                           "go-arounds and the usable-area gate is still shut; "
+                           "handing back to the engine, which will stall here\n",
+                           Unsorted::CurrentFrame, static_cast<void*>(pPlane),
+                           MaxDeferrals);
+            }
+        }
 
         // One line per plane, the first time it actually starts dropping. Says
         // WHICH level of the precedence chain won, because the configured value
