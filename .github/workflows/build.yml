@@ -71,4 +71,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: SuperWeaponExt
-          path: DevBuild\SuperWeaponExt.dll
+          path: |
+            DevBuild\SuperWeaponExt.dll
+            DevBuild\SuperWeaponExt.map
