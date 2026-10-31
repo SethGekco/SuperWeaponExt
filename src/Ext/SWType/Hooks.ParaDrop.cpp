@@ -220,6 +220,236 @@ namespace
         }
     }
 
+    // Human-readable LandType, for the terrain question.
+    const char* LandName(int v)
+    {
+        static const char* const kLand[] = {
+            "Clear", "Road", "Water", "Rock", "Wall",
+            "Tiberium", "Beach", "Rough", "Ice", "Railroad" };
+        return (v >= 0 && v < 10) ? kLand[v] : "?";
+    }
+
+    // Is the plane itself standing somewhere the engine will let it drop?
+    //
+    // ⚠ THIS IS THE GATE THAT CAUSES THE HOVER, and it is not our code.
+    // Mission_ParadropOverfly (0x415960) does, in the branch taken once the
+    // plane is inside the drop radius:
+    //
+    //     4159C8:  lea  ecx,[esi+0x9C]        ; the PLANE's own Location
+    //     4159EB:  mov  ecx,0x87F7E8          ; MapClass::Instance
+    //     4159F0:  call 0x5785F0              ; IsWithinUsableArea(coords)
+    //     4159F5:  test al,al
+    //     4159F7:  je   0x415A39              ; false -> `mov eax,5; ret`
+    //     4159FB:  call 0x415C60              ; true  -> AircraftClass::Paradrop
+    //
+    // The false branch returns a 5-frame delay and does nothing else: no drop,
+    // no new mission, no change of destination. So a plane that has arrived at
+    // its destination, is inside the radius, and reads as OUTSIDE the usable
+    // area will sit there re-asking the same question forever. That is exactly
+    // "the plane hovers where it is supposed to drop".
+    //
+    // We evaluate the same predicate here, one hook earlier in the same tick,
+    // against the same coordinates — the plane cannot move between 0x415997 and
+    // 0x4159F0 — so the logged answer is the answer the engine is about to act
+    // on, without claiming another address.
+    bool PlaneInUsableArea(AircraftClass* pPlane)
+    {
+        return pPlane && MapClass::Instance.IsWithinUsableArea(pPlane->GetCoords());
+    }
+
+    // =========================================================================
+    // STALL DETECTOR — "why did that plane stop moving?", wherever it stopped.
+    //
+    // ⚠ WHY THIS EXISTS. The usable-area gate at 0x4159F7 is confirmed and
+    // repaired: the 2026-10-30 19:56 log shows one deferral at (110,165) with
+    // four aboard, a go-around, and the whole stick delivered. But the 22:32
+    // log has a plane frozen in place with ZERO gate refusals and all six
+    // sorties running clean to their last passenger. So there is a SECOND
+    // freeze, and it is somewhere this DLL does not watch.
+    //
+    // The two blind stretches are the ones either side of the overfly mission:
+    //   - Mission_ParadropApproach (26), which flies the plane in
+    //   - Mission_Retreat (4, queued at 0x415A33 once the cargo is gone),
+    //     which flies it home — and which Phobos also hooks, at 0x415A7A,
+    //     AircraftClass_Mission_Retreat_PickEdgeCell
+    //
+    // Guessing which one and hooking it is how three earlier diagnostics ended
+    // up on unreachable paths. So this watches the SYMPTOM instead: walk the
+    // aircraft array and report any plane in the paradrop lifecycle whose
+    // position has not changed for a while, whatever mission it is in. No new
+    // address, no guess about which function is at fault, and it reports the
+    // state that would identify any of them.
+    //
+    // Cost: one pass over AircraftClass::Array every 15 frames. That array
+    // holds aircraft only, not every techno, so it is a handful of entries.
+    // =========================================================================
+
+    // Frames of no movement before a plane counts as stalled. 90 ~ 6s at 15fps:
+    // long enough that a plane turning around or hovering over a drop is not
+    // reported, short enough to catch a freeze while its context is still live.
+    constexpr int StallFrames = 90;
+
+    // How often to re-report one stalled plane, and how many times, so the log
+    // says whether a freeze is permanent without filling up with it.
+    constexpr int StallRepeatFrames = 300;
+    constexpr int StallMaxReports   = 4;
+
+    const char* MissionName(int m)
+    {
+        switch (m)
+        {
+        case 4:  return "Retreat";
+        case 26: return "ParadropApproach";
+        case 27: return "ParadropOverfly";
+        default: return "other";
+        }
+    }
+
+    // Resolve whatever a plane is heading for, or aiming at, to a cell.
+    // Returns false when there is nothing there — which is itself a finding: a
+    // plane with no destination has nowhere to fly to.
+    bool AbstractCell(AbstractClass* pWhat, CellStruct& out)
+    {
+        if (!pWhat)
+            return false;
+
+        out = CellClass::Coord2Cell(pWhat->GetCoords());
+        return true;
+    }
+
+    void SweepStalledPlanes()
+    {
+        struct Watch
+        {
+            AircraftClass* Plane;
+            CellStruct     Where;
+            int            SinceFrame;   // first frame seen at Where
+            int            Reports;
+            int            LastReport;
+        };
+        static std::vector<Watch> s_watch;
+
+        const int frame = Unsorted::CurrentFrame;
+
+        // Once a second. A backwards frame jump means a new scenario, so the
+        // whole watch list is dropped rather than measuring a stall across two
+        // matches.
+        static int s_lastSweep = -1000000;
+        if (frame < s_lastSweep)
+            s_watch.clear();
+        else if (frame - s_lastSweep < 15)
+            return;
+
+        s_lastSweep = frame;
+
+        // AircraftClass::Array is DEFINE_REFERENCE -- a reference to the
+        // vector, not a pointer. Holds aircraft only, so this is a handful
+        // of entries, not every techno on the map.
+        for (int i = 0; i < AircraftClass::Array.Count; ++i)
+        {
+            AircraftClass* const pPlane = AircraftClass::Array.GetItem(i);
+            if (!pPlane || !pPlane->IsAlive || pPlane->InLimbo)
+                continue;
+
+            const int mission = static_cast<int>(pPlane->CurrentMission);
+            if (mission != 4 && mission != 26 && mission != 27)
+                continue;
+
+            const CellStruct here = CellClass::Coord2Cell(pPlane->GetCoords());
+
+            Watch* pWatch = nullptr;
+            for (auto& w : s_watch)
+            {
+                if (w.Plane == pPlane)
+                {
+                    pWatch = &w;
+                    break;
+                }
+            }
+
+            if (!pWatch)
+            {
+                s_watch.push_back(Watch{ pPlane, here, frame, 0, 0 });
+                if (s_watch.size() > 128)
+                    s_watch.erase(s_watch.begin());
+                continue;
+            }
+
+            if (pWatch->Where != here)
+            {
+                // Moving again. Say so only if we had complained, so a
+                // recovered freeze is distinguishable from a permanent one.
+                if (pWatch->Reports)
+                {
+                    Debug::Log("[SuperWeaponExt] para UNSTUCK f%d plane=%p: "
+                               "moved to (%d,%d) after %d frames still, "
+                               "mission=%d(%s)\n",
+                               frame, static_cast<void*>(pPlane),
+                               here.X, here.Y, frame - pWatch->SinceFrame,
+                               mission, MissionName(mission));
+                }
+
+                pWatch->Where      = here;
+                pWatch->SinceFrame = frame;
+                pWatch->Reports    = 0;
+                continue;
+            }
+
+            const int still = frame - pWatch->SinceFrame;
+            if (still < StallFrames || pWatch->Reports >= StallMaxReports)
+                continue;
+
+            if (pWatch->Reports && frame - pWatch->LastReport < StallRepeatFrames)
+                continue;
+
+            ++pWatch->Reports;
+            pWatch->LastReport = frame;
+
+            CellStruct dest{};
+            CellStruct targ{};
+            const bool hasDest = AbstractCell(pPlane->Destination, dest);
+            const bool hasTarg = AbstractCell(pPlane->Target, targ);
+
+            auto const pCell = MapClass::Instance.TryGetCellAt(here);
+
+            Debug::Log("[SuperWeaponExt] para STALLED f%d plane=%p %s: still at "
+                       "(%d,%d) for %d frames (report %d/%d). mission=%d(%s) "
+                       "pax=%d h=%d passes=%d locked=%d usable=%d speed=%d%% "
+                       "dest=%s(%d,%d) target=%s(%d,%d) land=%d(%s) level=%d\n",
+                       frame, static_cast<void*>(pPlane),
+                       pPlane->Type ? pPlane->Type->ID : "?",
+                       here.X, here.Y, still,
+                       pWatch->Reports, StallMaxReports,
+                       mission, MissionName(mission),
+                       pPlane->Passengers.NumPassengers,
+                       pPlane->GetHeight(),
+                       static_cast<int>(pPlane->NumParadropsLeft),
+                       pPlane->IsLocked ? 1 : 0,
+                       PlaneInUsableArea(pPlane) ? 1 : 0,
+                       static_cast<int>(pPlane->SpeedPercentage * 100.0),
+                       hasDest ? "" : "NONE", dest.X, dest.Y,
+                       hasTarg ? "" : "NONE", targ.X, targ.Y,
+                       pCell ? static_cast<int>(pCell->LandType) : -1,
+                       LandName(pCell ? static_cast<int>(pCell->LandType) : -1),
+                       pCell ? pCell->Level : -1);
+        }
+
+        // Forget planes that have gone.
+        for (std::size_t i = 0; i < s_watch.size(); )
+        {
+            AircraftClass* const p = s_watch[i].Plane;
+            if (!p || !p->IsAlive || p->InLimbo)
+            {
+                s_watch[i] = s_watch.back();
+                s_watch.pop_back();
+            }
+            else
+            {
+                ++i;
+            }
+        }
+    }
+
     bool LaunchPlane(HouseClass* pOwner, AircraftTypeClass* pPlaneType,
                      const CellStruct& target, Edge entry,
                      const std::vector<TechnoTypeClass*>& types,
@@ -477,6 +707,7 @@ DEFINE_HOOK(0x55B6B3, LogicClass_AI_SWExtFrameTick, 0x5)
     SWTypeExt::TickAutoFire();
     SWTypeExt::TickBeacons();
     SweepPlaneRadius();
+    SweepStalledPlanes();
     return 0;
 }
 
@@ -558,15 +789,6 @@ namespace
         }
 
         return raw;
-    }
-
-    // Human-readable LandType, for the terrain question.
-    const char* LandName(int v)
-    {
-        static const char* const kLand[] = {
-            "Clear", "Road", "Water", "Rock", "Wall",
-            "Tiberium", "Beach", "Rough", "Ice", "Railroad" };
-        return (v >= 0 && v < 10) ? kLand[v] : "?";
     }
 
     // Resolve whatever the plane is aiming at to a cell.
@@ -679,34 +901,6 @@ namespace
             s_entries.erase(s_entries.begin());
 
         return s_entries.back().Count;
-    }
-
-    // Is the plane itself standing somewhere the engine will let it drop?
-    //
-    // ⚠ THIS IS THE GATE THAT CAUSES THE HOVER, and it is not our code.
-    // Mission_ParadropOverfly (0x415960) does, in the branch taken once the
-    // plane is inside the drop radius:
-    //
-    //     4159C8:  lea  ecx,[esi+0x9C]        ; the PLANE's own Location
-    //     4159EB:  mov  ecx,0x87F7E8          ; MapClass::Instance
-    //     4159F0:  call 0x5785F0              ; IsWithinUsableArea(coords)
-    //     4159F5:  test al,al
-    //     4159F7:  je   0x415A39              ; false -> `mov eax,5; ret`
-    //     4159FB:  call 0x415C60              ; true  -> AircraftClass::Paradrop
-    //
-    // The false branch returns a 5-frame delay and does nothing else: no drop,
-    // no new mission, no change of destination. So a plane that has arrived at
-    // its destination, is inside the radius, and reads as OUTSIDE the usable
-    // area will sit there re-asking the same question forever. That is exactly
-    // "the plane hovers where it is supposed to drop".
-    //
-    // We evaluate the same predicate here, one hook earlier in the same tick,
-    // against the same coordinates — the plane cannot move between 0x415997 and
-    // 0x4159F0 — so the logged answer is the answer the engine is about to act
-    // on, without claiming another address.
-    bool PlaneInUsableArea(AircraftClass* pPlane)
-    {
-        return pPlane && MapClass::Instance.IsWithinUsableArea(pPlane->GetCoords());
     }
 
     // The map geometry the usable-area test is built from, printed once, the
