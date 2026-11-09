@@ -304,6 +304,18 @@ namespace
     // as the model and then failed to copy the signature.
     using SelectWeaponFunc = int(__fastcall*)(TechnoClass*, void*, AbstractClass*);
 
+    // The firer's type extension if it has a WeaponVs rule. Only such a firer
+    // gets past the wrapper's first checks, to the cache rebuild and the log.
+    TechnoTypeExt::ExtData* WeaponVsExt(TechnoClass* pThis)
+    {
+        auto const pType = pThis->GetTechnoType();
+        if (!pType)
+            return nullptr;
+
+        auto const pTypeExt = TechnoTypeExt::ExtMap.Find(pType);
+        return pTypeExt && pTypeExt->WeaponVs.Active() ? pTypeExt : nullptr;
+    }
+
     int __fastcall TechnoClass_SelectWeapon_Wrapper(TechnoClass* pThis,
                                                     void* /* unused EDX */,
                                                     AbstractClass* pTarget)
@@ -317,13 +329,10 @@ namespace
         if (!pThis || !pTarget)
             return chosen;
 
+        auto const pTypeExt = WeaponVsExt(pThis);
+        if (!pTypeExt)
+            return chosen;
         auto const pType = pThis->GetTechnoType();
-        if (!pType)
-            return chosen;
-
-        auto const pTypeExt = TechnoTypeExt::ExtMap.Find(pType);
-        if (!pTypeExt || !pTypeExt->WeaponVs.Active())
-            return chosen;
 
         // Only technos can be inhibitors or designators; a cell target cannot.
         auto const pTargetTechno = abstract_cast<TechnoClass*>(pTarget);
@@ -376,6 +385,15 @@ namespace
 
         return override_;
     }
+}
+
+// For PerfExt, which runs target checks (and so this wrapper) ahead of time and
+// may run them on several threads: 1 if the wrapper can write for this firer
+// (the cache rebuild, the log-once list), so its target checks must stay
+// serial. Shares the wrapper's first condition, so the two can't drift apart.
+extern "C" __declspec(dllexport) int __cdecl SuperWeaponExt_TargetCheckWrites(TechnoClass* pScanner)
+{
+    return pScanner && WeaponVsExt(pScanner) ? 1 : 0;
 }
 
 // One slot per TechnoClass subclass. All four resolve to 0x6F3330 in a stock
