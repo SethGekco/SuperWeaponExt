@@ -40,6 +40,7 @@
 #include "Body.h"
 
 #include <Ext/Techno/StandingOrders.h>
+#include <Weather/Weather.h>
 
 #include <Ext/TechnoType/Body.h>   // TechnoTypeExt — the ParadropRadius override
 
@@ -708,6 +709,7 @@ DEFINE_HOOK(0x55B6B3, LogicClass_AI_SWExtFrameTick, 0x5)
     SWTypeExt::TickBeacons();
     SweepPlaneRadius();
     SweepStalledPlanes();
+    Weather::FrameTick();
     return 0;
 }
 

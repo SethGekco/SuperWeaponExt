@@ -7,6 +7,7 @@
  * coexist. Confirmed against Phobos src/Ext/TechnoType/Body.cpp (develop).
  */
 #include "Body.h"
+#include <Weather/Weather.h>
 
 #include <Utilities/Macro.h>
 
@@ -321,5 +322,6 @@ DEFINE_HOOK(0x716123, TechnoTypeClass_LoadFromINI, 0x5)
     GET_STACK(CCINIClass*, pINI, 0x380);
 
     TechnoTypeExt::ExtMap.LoadFromINI(pItem, pINI);
+    Weather::ReadTechnoType(pItem, pINI);
     return 0;
 }

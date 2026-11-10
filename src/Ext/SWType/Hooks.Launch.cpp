@@ -57,6 +57,7 @@
 #include "Body.h"
 
 #include <Ext/Techno/StandingOrders.h>
+#include <Weather/Weather.h>
 
 #include <DisplayClass.h>
 #include <Fundamentals.h>   // Unsorted::CurrentFrame, for the denial-log throttle
@@ -311,7 +312,9 @@ namespace
     }
 }
 
-DEFINE_HOOK(0x4FAE50, HouseClass_Fire_SW_ConstraintVeto, 0x7)
+// The body of the Fire_SW hook below. A plain function so the one handler at
+// 0x4FAE50 can run it and then hand a launch that went ahead to the weather code.
+static DWORD FireSW_ConstraintVeto(REGISTERS* R)
 {
     enum { Continue = 0, Deny = 0x4FAEF3 };
 
@@ -357,7 +360,11 @@ DEFINE_HOOK(0x4FAE50, HouseClass_Fire_SW_ConstraintVeto, 0x7)
     // A superweapon with no band takes neither branch's new behaviour: the
     // AITargeting.* stage keys do nothing without a band, so a mod that never
     // sets one sees exactly the old path.
-    const bool scattering = pExt->Scatter.Active();
+    // A weather strike with Strike.SW.OwnRules=no has already been placed by
+    // the weather pool's own inhibitor/designator rules; this SW's scatter and
+    // SWExt.* constraints stand down for that one launch.
+    const bool weatherOwnsTarget = Weather::IsBypassingSWRules();
+    const bool scattering = pExt->Scatter.Active() && !weatherOwnsTarget;
 
     if (scattering)
     {
@@ -368,7 +375,8 @@ DEFINE_HOOK(0x4FAE50, HouseClass_Fire_SW_ConstraintVeto, 0x7)
         }
     }
 
-    if (!scattering && pExt->IsConfigured() && !pExt->AllowsFireAt(pThis, *pCoords))
+    if (!scattering && !weatherOwnsTarget && pExt->IsConfigured()
+        && !pExt->AllowsFireAt(pThis, *pCoords))
     {
         int suppressed = 0;
         if (ShouldLogDenial(pThis->ArrayIndex, idxSW, Unsorted::CurrentFrame, suppressed))
@@ -573,6 +581,21 @@ DEFINE_HOOK(0x4FAE50, HouseClass_Fire_SW_ConstraintVeto, 0x7)
         SWTypeExt::RequestKeepSelected(idxSW);
 
     return Continue;
+}
+
+// HouseClass::Fire_SW entry -- the universal launch funnel. One handler for the
+// whole DLL: the constraint veto runs first, and only a launch that went ahead
+// (Continue, or the owned paradrop's Deny with AL=1 "it fired") counts toward
+// weather contributors (WeatherSystem.* on the SW).
+DEFINE_HOOK(0x4FAE50, HouseClass_Fire_SW_ConstraintVeto, 0x7)
+{
+    GET(HouseClass*, pThis, ECX);
+    GET_STACK(int, idxSW, 0x4);
+
+    const DWORD ret = FireSW_ConstraintVeto(R);
+    if (ret == 0 || R->AL() == 1)
+        Weather::OnSuperWeaponFired(pThis, idxSW);
+    return ret;
 }
 
 // STANDING ORDERS: the per-house "last SW impact cell" blackboard is written

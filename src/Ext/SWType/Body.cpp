@@ -6,6 +6,7 @@
  * ours is separate and every handler returns 0, so Syringe chains them.
  */
 #include "Body.h"
+#include <Weather/Weather.h>
 
 #include <Ext/TechnoType/Body.h>
 
@@ -1416,5 +1417,6 @@ DEFINE_HOOK(0x6CEE43, SuperWeaponTypeClass_LoadFromINI, 0xA)
     GET_STACK(CCINIClass*, pINI, 0x3FC);
 
     SWTypeExt::ExtMap.LoadFromINI(pItem, pINI);
+    Weather::ReadSuperWeaponType(pItem, pINI);
     return 0;
 }
