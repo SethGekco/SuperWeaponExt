@@ -3399,6 +3399,24 @@ void Weather::OnSuperWeaponFired(HouseClass* pHouse, int swSlotIndex)
 	}
 }
 
+namespace
+{
+	// What the GetTotalDamage entry decided, for the tail hook after Verses
+	// (Versus.<WH>.Add / .Clamp). thread_local: damage can be computed off the
+	// main thread (PerfExt workers), and entry and tail always run on the same
+	// thread, one call apart.
+	struct DamageTailState
+	{
+		bool active = false;
+		WarheadTypeClass* wh = nullptr;
+		double factor = 1.0;   // the weather multiplier applied at entry
+		double add = 0.0;      // flat Verses to add, fraction
+		bool clamp = false;
+		double lo = 0.0, hi = 0.0;
+	};
+	thread_local DamageTailState DamageTail;
+}
+
 // After Verses: `result` is the engine's damage x Verses, `damage` the input
 // after distance falloff (our entry factor included). Add the flat Verses and
 // clamp the effective Verses (result / weather-free damage).
@@ -3429,23 +3447,6 @@ bool Weather::IsBypassingSWRules()
 	return BypassSWRules;
 }
 
-namespace
-{
-	// What the GetTotalDamage entry decided, for the tail hook after Verses
-	// (Versus.<WH>.Add / .Clamp). thread_local: damage can be computed off the
-	// main thread (PerfExt workers), and entry and tail always run on the same
-	// thread, one call apart.
-	struct DamageTailState
-	{
-		bool active = false;
-		WarheadTypeClass* wh = nullptr;
-		double factor = 1.0;   // the weather multiplier applied at entry
-		double add = 0.0;      // flat Verses to add, fraction
-		bool clamp = false;
-		double lo = 0.0, hi = 0.0;
-	};
-	thread_local DamageTailState DamageTail;
-}
 
 int Weather::AdjustDamage(int damage, WarheadTypeClass* pWH, int armor)
 {
