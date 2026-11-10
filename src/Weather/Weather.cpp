@@ -689,17 +689,19 @@ namespace
 			_snprintf_s(key, sizeof(key), "Versus.%s.PerAmount", wh.c_str());
 			c.perAmountA = pINI->ReadInteger(m.Name.c_str(), key, 0);
 			{
+				// one value per Armors= entry => per armor; otherwise a single
+				// value covers every armor (a list without Armors= is positional)
 				auto vals = readList("Mult");
-				if (vals.size() == 1)
+				if (vals.size() == 1 && vals.size() != cols.size())
 					c.multA = num(vals[0]);
-				else if (vals.size() > 1)
+				else if (!vals.empty())
 					c.multByArmor = byArmor(vals, num);
 			}
 			_snprintf_s(key, sizeof(key), "Versus.%s.MultMax", wh.c_str());
 			c.multMaxA = pINI->ReadDouble(m.Name.c_str(), key, 1e9);
 			{
 				auto vals = readList("Add");
-				if (vals.size() == 1 && cols.empty())
+				if (vals.size() == 1 && vals.size() != cols.size())
 					c.addAll = ParsePercent(vals[0]);
 				else if (!vals.empty())
 					c.addByArmor = byArmor(vals, ParsePercent);

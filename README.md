@@ -23,6 +23,11 @@ Phobos hardcode:
 | Power check | inhibitor buildings only | configurable per role |
 | SW hotkey | positional (sidebar slot N) | **dedicated, per named superweapon** |
 
+**Weather** (formerly WeatherExt.dll) lives here too: synced weather meters,
+strike pools with inhibitor/designator anchors and bursts, the vanilla
+lightning strike rebuilt stage by stage, and weather-driven damage/cost. See
+[docs/WEATHER_MANUAL.md](docs/WEATHER_MANUAL.md).
+
 See [INI_REFERENCE.md](INI_REFERENCE.md) for tags,
 [FINDINGS.md](FINDINGS.md) for the feasibility investigation, and
 [HOOKS_LOG.md](HOOKS_LOG.md) for every address touched.
