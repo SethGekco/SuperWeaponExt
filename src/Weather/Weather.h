@@ -41,6 +41,8 @@ namespace Weather
 	// P3: weather-driven damage multiplier at GetTotalDamage. Returns the
 	// adjusted damage (unchanged when no curve applies).
 	int AdjustDamage(int damage, WarheadTypeClass* pWH, int armor);
+	// After Verses: Versus.<WH>.Add (flat Verses per step) and .Clamp.
+	int AdjustDamageTail(int result, int damage, WarheadTypeClass* pWH);
 	void FrameTick();
 
 	// True only while a weather pool is firing a strike SW whose pool says

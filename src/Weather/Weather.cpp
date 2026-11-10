@@ -29,6 +29,11 @@
 #include <Utilities/Macro.h>
 #include <Utilities/Debug.h>
 
+// This DLL's own superweapon/techno extensions: the strike anchors read their
+// SWExt.* inhibitor/designator rules and SWExt.*Range tags.
+#include <Ext/SWType/Body.h>
+#include <Ext/TechnoType/Body.h>
+
 #include <string>
 #include <vector>
 #include <unordered_map>
@@ -57,13 +62,14 @@ namespace
 	// has its own Debug.<Category>=yes|no and every category shares a per-game
 	// line budget, Debug.Lines (0 = unlimited), so a long game can't flood
 	// debug.log. Logging never touches the synced RNG or game state.
-	enum class Cat { Meters, Contributors, Fire, Motion, Pools, Effects, Anims, Damage, Count };
+	enum class Cat { Meters, Contributors, Fire, Motion, Pools, Effects, Anims, Damage, Anchors, Bursts, Count };
 	struct DebugCat { const char* key; bool on; int left; };
 	DebugCat DebugCats[(int)Cat::Count] = {
 		{ "Debug.Meters", true, 0 }, { "Debug.Contributors", true, 0 },
 		{ "Debug.Fire", true, 0 }, { "Debug.Motion", true, 0 },
 		{ "Debug.Pools", true, 0 }, { "Debug.Effects", true, 0 },
 		{ "Debug.Anims", true, 0 }, { "Debug.Damage", true, 0 },
+		{ "Debug.Anchors", true, 0 }, { "Debug.Bursts", true, 0 },
 	};
 	bool DebugMaster = true;
 	int DebugLines = 40;
@@ -126,6 +132,16 @@ namespace
 		int perAmountA = 0;          // 0 => Tier A off
 		double multA = 0.0;          // factor += multA per step
 		double multMaxA = 1e9;
+		// ...or, with Versus.<WH>.Armors and a Mult LIST, one per armor
+		// (armor index -> mult per step; unlisted armors stay x1).
+		std::vector<double> multByArmor;
+		// Versus.<WH>.Add: flat Verses added per step, as a fraction (0.1 =
+		// 10%). Works where Verses is 0%, which no multiplier can.
+		double addAll = 0.0;
+		std::vector<double> addByArmor;          // armor index -> add; empty => addAll
+		// Versus.<WH>.Clamp: floor/ceiling on the final Verses, as fractions.
+		bool hasClamp = false;
+		double clampLo = 0.0, clampHi = 0.0;
 
 		// Tier C: keyframed per-armor multiplier rows (positional, Verses order).
 		std::vector<int> keyframes;              // ascending meter amounts
@@ -466,6 +482,42 @@ namespace
 
 	// ---- motion (rev 4) ---------------------------------------------------
 	// Contributor command that steers a meter's climb/decline motion.
+	std::vector<std::string> SplitList(const std::string& s)
+	{
+		std::vector<std::string> out;
+		size_t i = 0;
+		while (i <= s.size())
+		{
+			size_t j = s.find(',', i);
+			if (j == std::string::npos) j = s.size();
+			size_t a = i, b = j;
+			while (a < b && s[a] == ' ') ++a;
+			while (b > a && s[b - 1] == ' ') --b;
+			out.push_back(s.substr(a, b - a));
+			i = j + 1;
+		}
+		return out;
+	}
+
+	bool ParseBool(const std::string& v, bool current)
+	{
+		if (v.empty()) return current;
+		switch (v[0])
+		{
+		case '1': case 't': case 'T': case 'y': case 'Y': return true;
+		case '0': case 'f': case 'F': case 'n': case 'N': return false;
+		default: return current;
+		}
+	}
+
+	// "25%" -> 0.25; a plain number is already a fraction (1.0 = 100%), the
+	// same two spellings Verses accepts.
+	double ParsePercent(const std::string& v)
+	{
+		const double x = atof(v.c_str());
+		return (!v.empty() && v.back() == '%') ? x / 100.0 : x;
+	}
+
 	enum class MotionCmd { Keep, Climb, Decline, Stable, Reverse };
 
 	MotionCmd ParseMotionCmd(const char* v)
@@ -589,22 +641,9 @@ namespace
 			VersusCurve c;
 			c.whName = wh;
 
-			// Tier A
-			_snprintf_s(key, sizeof(key), "Versus.%s.PerAmount", wh.c_str());
-			c.perAmountA = pINI->ReadInteger(m.Name.c_str(), key, 0);
-			_snprintf_s(key, sizeof(key), "Versus.%s.Mult", wh.c_str());
-			c.multA = pINI->ReadDouble(m.Name.c_str(), key, 0.0);
-			_snprintf_s(key, sizeof(key), "Versus.%s.MultMax", wh.c_str());
-			c.multMaxA = pINI->ReadDouble(m.Name.c_str(), key, 1e9);
-
-			// Tier C keyframes + rows. Rows may be authored BY NAME: if
-			// Versus.<WH>.Armors= lists armor names, each Row.<kf> is parallel
-			// to that list (sparse -- unlisted armors stay at x1). Without
-			// Armors=, a Row is a full positional row in Verses order.
-			_snprintf_s(key, sizeof(key), "Versus.%s.Keyframes", wh.c_str());
-			ReadIntList(pINI, m.Name.c_str(), key, c.keyframes);
-
-			std::vector<int> cols; // armor index per row column; empty => positional
+			// Versus.<WH>.Armors names the columns of every per-armor list
+			// below (Mult, Add, Row.<kf>). Read first so they can use it.
+			std::vector<int> cols; // armor index per column; empty => positional
 			_snprintf_s(key, sizeof(key), "Versus.%s.Armors", wh.c_str());
 			std::vector<std::string> armorNames;
 			ReadNameList(pINI, m.Name.c_str(), key, armorNames);
@@ -620,6 +659,69 @@ namespace
 				else
 					cols.push_back(ai->second);
 			}
+
+			// Scatter a per-armor list into an armor-indexed vector. Without
+			// Armors= a list is positional in Verses order.
+			auto byArmor = [&](const std::vector<std::string>& vals, auto parse) {
+				std::vector<double> out;
+				for (size_t j = 0; j < vals.size(); ++j)
+				{
+					const int ai = cols.empty() ? (int)j : (j < cols.size() ? cols[j] : -1);
+					if (ai < 0)
+						continue;
+					if ((int)out.size() <= ai)
+						out.resize(ai + 1, 0.0);
+					out[ai] = parse(vals[j]);
+				}
+				return out;
+			};
+			auto num = [](const std::string& v) { return atof(v.c_str()); };
+			auto readList = [&](const char* what) {
+				_snprintf_s(key, sizeof(key), "Versus.%s.%s", wh.c_str(), what);
+				std::vector<std::string> vals;
+				if (pINI->ReadString(m.Name.c_str(), key, "", WeatherExtDLL::readBuffer, WeatherExtDLL::readLength)
+					&& *WeatherExtDLL::readBuffer)
+					vals = SplitList(WeatherExtDLL::readBuffer);
+				return vals;
+			};
+
+			// Tier A: one Mult for the whole warhead, or a list per armor.
+			_snprintf_s(key, sizeof(key), "Versus.%s.PerAmount", wh.c_str());
+			c.perAmountA = pINI->ReadInteger(m.Name.c_str(), key, 0);
+			{
+				auto vals = readList("Mult");
+				if (vals.size() == 1)
+					c.multA = num(vals[0]);
+				else if (vals.size() > 1)
+					c.multByArmor = byArmor(vals, num);
+			}
+			_snprintf_s(key, sizeof(key), "Versus.%s.MultMax", wh.c_str());
+			c.multMaxA = pINI->ReadDouble(m.Name.c_str(), key, 1e9);
+			{
+				auto vals = readList("Add");
+				if (vals.size() == 1 && cols.empty())
+					c.addAll = ParsePercent(vals[0]);
+				else if (!vals.empty())
+					c.addByArmor = byArmor(vals, ParsePercent);
+			}
+			{
+				auto vals = readList("Clamp");
+				if (!vals.empty())
+				{
+					c.hasClamp = true;
+					c.clampLo = vals.size() > 1 ? ParsePercent(vals[0]) : 0.0;
+					c.clampHi = ParsePercent(vals.back());
+					if (c.clampHi < c.clampLo)
+						std::swap(c.clampLo, c.clampHi);
+				}
+			}
+
+			// Tier C keyframes + rows. Rows may be authored BY NAME: with
+			// Armors= each Row.<kf> is parallel to that list (sparse --
+			// unlisted armors stay at x1). Without Armors=, a Row is a full
+			// positional row in Verses order.
+			_snprintf_s(key, sizeof(key), "Versus.%s.Keyframes", wh.c_str());
+			ReadIntList(pINI, m.Name.c_str(), key, c.keyframes);
 
 			for (int kf : c.keyframes)
 			{
@@ -682,7 +784,10 @@ namespace
 		if (c.perAmountA > 0 && amount > 0)
 		{
 			const int steps = amount / c.perAmountA;
-			double fA = 1.0 + c.multA * steps;
+			double mult = c.multA;
+			if (!c.multByArmor.empty())
+				mult = (armor >= 0 && armor < (int)c.multByArmor.size()) ? c.multByArmor[armor] : 0.0;
+			double fA = 1.0 + mult * steps;
 			if (fA > c.multMaxA) fA = c.multMaxA;
 			if (fA < 0.0) fA = 0.0;
 			factor *= fA;
@@ -718,6 +823,17 @@ namespace
 		}
 
 		return factor;
+	}
+
+	// Versus.<WH>.Add at this amount + armor: flat Verses added (fraction).
+	double EvalVersusAdd(const VersusCurve& c, int amount, int armor)
+	{
+		if (c.perAmountA <= 0 || amount <= 0)
+			return 0.0;
+		double per = c.addAll;
+		if (!c.addByArmor.empty())
+			per = (armor >= 0 && armor < (int)c.addByArmor.size()) ? c.addByArmor[armor] : 0.0;
+		return per * (amount / c.perAmountA);
 	}
 
 	Meter* FindMeter(const char* name)
@@ -962,6 +1078,33 @@ namespace
 		}
 	}
 
+	// ---- strike anchors (rev 6): inhibitors and designators ----------------
+	// Where a pool strike may land, decided by technos on the map. Designators
+	// pull a strike toward them; inhibitors push it off. Which technos count,
+	// whose, and how hard they pull/push are the pool's own tags, so a weather
+	// strike can follow rules unlike any player superweapon's. Set to "sw" to
+	// borrow the strike SW's own SWExt.Inhibitors / SWExt.Designators.
+	enum class AnchorSet { Off, List, Any, SW };
+	constexpr unsigned REL_OWNER = 1, REL_ALLIES = 2, REL_ENEMIES = 4; // SWExt::Relation bits
+
+	struct AnchorRule
+	{
+		AnchorSet set = AnchorSet::Off;
+		std::vector<std::string> typeNames;
+		std::vector<int> typeIdx;            // unified TechnoType indices (resolved)
+		std::vector<int> ranges;             // parallel to typeNames; <0 = the type's own range
+		unsigned houses = 7;                 // REL_* mask relative to the firing house
+		bool housesSet = false;              // "sw": unset => the SW's own AffectsHouse
+		int players = 0;                     // 0 all, 1 humans, 2 computer
+		bool requirePower = true;
+		bool powerSet = false;               // "sw": unset => the SW's own RequirePower
+		std::vector<int> chances;            // the four outcomes, weighted
+		int edgeLo = 0, edgeHi = 1;          // cells from the radius edge
+		int reach = 0;                       // designators: cells beyond the radius they pull from; 0 = map
+		std::vector<std::pair<std::string, std::vector<int>>> typeChances; // per type: chances
+		std::vector<std::pair<int, std::vector<int>>> typeChancesIdx;      // resolved
+	};
+
 	// One complete parameter set. A pool holds one per Weight band.
 	struct PoolParams
 	{
@@ -997,6 +1140,28 @@ namespace
 		TargetMode target = TargetMode::Random;
 		std::string owner = "neutral";
 		bool grant = true;
+		bool ownRules = true;               // Strike.SW.OwnRules: the SW's own SWExt.* rules apply
+
+		// anchors (rev 6). Inhibitor outcomes: elsewhere, edge, ignore, cancel.
+		// Designator outcomes: ignore, edge, center, inside.
+		AnchorRule inhib{ AnchorSet::Off, {}, {}, {}, 7, false, 0, true, false, { 100, 0, 0, 0 } };
+		AnchorRule desig{ AnchorSet::Off, {}, {}, {}, 7, false, 0, false, false, { 0, 0, 0, 100 } };
+
+		// bursts (rev 6): each strike point gets a cluster of hits over time
+		int burstLo = 1, burstHi = 1;       // hits per burst, the first included
+		int burstAdd = 0, burstAddPer = 1;  // + burstAdd hits per burstAddPer Weight
+		int burstMax = 0;                   // 0 => hard ceiling 100
+		int burstRadLo = 0, burstRadHi = 3; // cells from the burst's center (or last hit)
+		int burstGapLo = 0, burstGapHi = 0; // frames between hits
+		bool burstWalk = false;             // each hit lands around the previous one
+		bool burstFirstAtCenter = true;
+		bool burstAnchors = true;           // follow-up hits keep out of inhibitors
+		int burstSWMode = 0;                // 0 same as the shot, 1 none, 2 own list
+		std::vector<std::string> burstSWNames;
+		std::vector<int> burstSWIdx, burstSWChances;
+		int burstFxMode = 0;
+		std::vector<std::string> burstFxNames;
+		std::vector<int> burstFxIdx, burstFxChances;
 	};
 
 	// Lower-cased key -> value, merged across INI passes (later pass wins), so
@@ -1028,34 +1193,6 @@ namespace
 	std::vector<Pool> Pools;
 	bool anyPools = false;
 
-	std::vector<std::string> SplitList(const std::string& s)
-	{
-		std::vector<std::string> out;
-		size_t i = 0;
-		while (i <= s.size())
-		{
-			size_t j = s.find(',', i);
-			if (j == std::string::npos) j = s.size();
-			size_t a = i, b = j;
-			while (a < b && s[a] == ' ') ++a;
-			while (b > a && s[b - 1] == ' ') --b;
-			out.push_back(s.substr(a, b - a));
-			i = j + 1;
-		}
-		return out;
-	}
-
-	bool ParseBool(const std::string& v, bool current)
-	{
-		if (v.empty()) return current;
-		switch (v[0])
-		{
-		case '1': case 't': case 'T': case 'y': case 'Y': return true;
-		case '0': case 'f': case 'F': case 'n': case 'N': return false;
-		default: return current;
-		}
-	}
-
 	// Numeric last segment ("strike.sw.3000") -> base + floor. Returns false
 	// for plain keys.
 	bool SplitBand(const std::string& key, std::string& base, int& floor)
@@ -1073,6 +1210,96 @@ namespace
 		base = key.substr(0, dot);
 		floor = atoi(key.c_str() + dot + 1);
 		return true;
+	}
+
+	// owner | allies | enemies | team | notallies | notowner | all | none,
+	// comma-combinable (the same words as SWExt.*.AffectsHouse).
+	unsigned ParseHouses(const std::string& v)
+	{
+		unsigned mask = 0;
+		for (auto& t : SplitList(v))
+		{
+			const char* k = t.c_str();
+			if (!_strcmpi(k, "owner") || !_strcmpi(k, "self")) mask |= REL_OWNER;
+			else if (!_strcmpi(k, "allies") || !_strcmpi(k, "ally")) mask |= REL_ALLIES;
+			else if (!_strcmpi(k, "enemies") || !_strcmpi(k, "enemy")) mask |= REL_ENEMIES;
+			else if (!_strcmpi(k, "team")) mask |= REL_OWNER | REL_ALLIES;
+			else if (!_strcmpi(k, "notallies")) mask |= REL_OWNER | REL_ENEMIES;
+			else if (!_strcmpi(k, "notowner")) mask |= REL_ALLIES | REL_ENEMIES;
+			else if (!_strcmpi(k, "all")) mask |= 7;
+		}
+		return mask;
+	}
+
+	// Inhibitors.* / Designators.* for one pass (`suffix` as in ApplyPoolKeys).
+	void ApplyAnchorKeys(AnchorRule& a, const char* prefix, const RawMap& raw, const std::string& suffix)
+	{
+		const std::string pre = Lower(prefix);
+		auto get = [&](const char* k) -> const std::string* {
+			auto it = raw.find(*k ? pre + "." + Lower(k) + suffix : pre + suffix);
+			return it != raw.end() ? &it->second : nullptr;
+		};
+		auto ints = [](const std::string& v) {
+			std::vector<int> out;
+			for (auto& n : SplitList(v))
+				out.push_back(n.empty() ? -1 : atoi(n.c_str()));
+			return out;
+		};
+		const std::string* v;
+		if ((v = get("")))
+		{
+			a.typeNames.clear();
+			if (v->empty() || _strcmpi(v->c_str(), "none") == 0) a.set = AnchorSet::Off;
+			else if (_strcmpi(v->c_str(), "any") == 0) a.set = AnchorSet::Any;
+			else if (_strcmpi(v->c_str(), "sw") == 0) a.set = AnchorSet::SW;
+			else
+			{
+				a.set = AnchorSet::List;
+				for (auto& n : SplitList(*v))
+					if (!n.empty())
+						a.typeNames.push_back(n);
+			}
+		}
+		if ((v = get("Ranges"))) a.ranges = ints(*v);
+		if ((v = get("Houses"))) { a.houses = ParseHouses(*v); a.housesSet = true; }
+		if ((v = get("Players")))
+			a.players = (!_strcmpi(v->c_str(), "humans") || !_strcmpi(v->c_str(), "human")) ? 1
+				: (!_strcmpi(v->c_str(), "ai") || !_strcmpi(v->c_str(), "computer")) ? 2 : 0;
+		if ((v = get("RequirePower"))) { a.requirePower = ParseBool(*v, a.requirePower); a.powerSet = true; }
+		if ((v = get("Chances")))
+		{
+			a.chances = ints(*v);
+			for (int& c : a.chances) c = std::max(0, c);
+			a.chances.resize(4, 0);
+		}
+		if ((v = get("Edge")))
+		{
+			auto e = ints(*v);
+			a.edgeLo = e.size() > 1 ? std::max(0, e[0]) : 0;
+			a.edgeHi = std::max(a.edgeLo, e.back());
+		}
+		if ((v = get("Reach"))) a.reach = std::max(0, atoi(v->c_str()));
+
+		// per type: <prefix>.<TYPE>.Chances (one dot-free segment between)
+		const std::string tail = ".chances" + suffix;
+		for (auto& kv : raw)
+		{
+			const std::string& k = kv.first;
+			if (k.size() <= pre.size() + 1 + tail.size() || k.compare(0, pre.size() + 1, pre + ".") != 0
+				|| k.compare(k.size() - tail.size(), tail.size(), tail) != 0)
+				continue;
+			const std::string type = k.substr(pre.size() + 1, k.size() - pre.size() - 1 - tail.size());
+			if (type.empty() || type.find('.') != std::string::npos)
+				continue;
+			auto c = ints(kv.second);
+			for (int& x : c) x = std::max(0, x);
+			c.resize(4, 0);
+			bool found = false;
+			for (auto& tc : a.typeChances)
+				if (tc.first == type) { tc.second = c; found = true; }
+			if (!found)
+				a.typeChances.push_back({ type, c });
+		}
 	}
 
 	// Apply every pool key found under `suffix` ("" = plain, ".3000" = band).
@@ -1173,6 +1400,64 @@ namespace
 			p.target = _strcmpi(v->c_str(), "mapcenter") == 0 ? TargetMode::MapCenter : TargetMode::Random;
 		if ((v = get("Strike.Owner"))) p.owner = *v;
 		if ((v = get("Strike.Grant"))) p.grant = ParseBool(*v, p.grant);
+		if ((v = get("Strike.SW.OwnRules"))) p.ownRules = ParseBool(*v, p.ownRules);
+
+		ApplyAnchorKeys(p.inhib, "Inhibitors", raw, suffix);
+		ApplyAnchorKeys(p.desig, "Designators", raw, suffix);
+
+		// "a,b" -> a..b; one value -> exactly it (counts) or 0..it (sizes, times)
+		auto pairInts = [](const std::string& v, int& lo, int& hi, bool singleIsExact) {
+			auto parts = SplitList(v);
+			if (parts.size() > 1) { lo = atoi(parts[0].c_str()); hi = atoi(parts[1].c_str()); }
+			else { hi = atoi(parts[0].c_str()); lo = singleIsExact ? hi : 0; }
+			if (hi < lo) std::swap(lo, hi);
+		};
+		auto namesOrMode = [](const std::string& v, int& mode, std::vector<std::string>& names) {
+			names.clear();
+			if (_strcmpi(v.c_str(), "same") == 0) { mode = 0; return; }
+			if (_strcmpi(v.c_str(), "none") == 0) { mode = 1; return; }
+			mode = 2;
+			for (auto& n : SplitList(v))
+				if (!n.empty())
+					names.push_back(n);
+		};
+		auto chanceList = [](const std::string& v, std::vector<int>& out) {
+			out.clear();
+			for (auto& n : SplitList(v))
+				out.push_back(std::max(0, atoi(n.c_str())));
+		};
+		if ((v = get("Burst.Count")))
+		{
+			pairInts(*v, p.burstLo, p.burstHi, true);
+			p.burstLo = std::max(1, p.burstLo);
+			p.burstHi = std::max(p.burstLo, p.burstHi);
+		}
+		if ((v = get("Burst.Count.Add")))
+		{
+			auto parts = SplitList(*v);
+			p.burstAdd = atoi(parts[0].c_str());
+			p.burstAddPer = parts.size() > 1 ? std::max(1, atoi(parts[1].c_str())) : 1;
+		}
+		if ((v = get("Burst.Count.Max"))) p.burstMax = std::max(0, atoi(v->c_str()));
+		if ((v = get("Burst.Radius")))
+		{
+			pairInts(*v, p.burstRadLo, p.burstRadHi, false);
+			p.burstRadLo = std::clamp(p.burstRadLo, 0, 64);
+			p.burstRadHi = std::clamp(p.burstRadHi, p.burstRadLo, 64);
+		}
+		if ((v = get("Burst.Gap")))
+		{
+			ParseTimePair(v->c_str(), p.burstGapLo, p.burstGapHi);
+			p.burstGapLo = std::max(0, p.burstGapLo);
+			p.burstGapHi = std::max(p.burstGapLo, p.burstGapHi);
+		}
+		if ((v = get("Burst.Walk"))) p.burstWalk = ParseBool(*v, p.burstWalk);
+		if ((v = get("Burst.FirstAtCenter"))) p.burstFirstAtCenter = ParseBool(*v, p.burstFirstAtCenter);
+		if ((v = get("Burst.Inhibitors"))) p.burstAnchors = ParseBool(*v, p.burstAnchors);
+		if ((v = get("Burst.SW"))) namesOrMode(*v, p.burstSWMode, p.burstSWNames);
+		if ((v = get("Burst.SW.Chances"))) chanceList(*v, p.burstSWChances);
+		if ((v = get("Burst.Effect"))) namesOrMode(*v, p.burstFxMode, p.burstFxNames);
+		if ((v = get("Burst.Effect.Chances"))) chanceList(*v, p.burstFxChances);
 	}
 
 	// Rebuild a pool's band table from its merged raw keys.
@@ -1838,9 +2123,452 @@ namespace
 		return items[n - 1];
 	}
 
+	// ---- anchors at runtime ------------------------------------------------
+	// Every live techno, cached once per frame on first need: type, owner,
+	// cell, rank, power. Copied values only -- nothing here is dereferenced
+	// later, so a techno dying mid-frame can't leave a dangling read.
+	struct AnchorSource
+	{
+		TechnoTypeClass* type;
+		int typeIdx;
+		HouseClass* owner;
+		short x, y;
+		SWExt::Rank vet;
+		bool powered;
+	};
+	std::vector<AnchorSource> AnchorSources;
+	int AnchorSourcesFrame = -1;
+
+	void RefreshAnchorSources()
+	{
+		if (AnchorSourcesFrame == Unsorted::CurrentFrame)
+			return;
+		AnchorSourcesFrame = Unsorted::CurrentFrame;
+		AnchorSources.clear();
+		for (int i = 0; i < TechnoClass::Array.Count; ++i)
+		{
+			TechnoClass* t = TechnoClass::Array.GetItem(i);
+			if (!t || !t->IsAlive || t->Health <= 0 || t->InLimbo || t->Deactivated)
+				continue;
+			TechnoTypeClass* type = t->GetTechnoType();
+			if (!type)
+				continue;
+			const CellStruct c = CellClass::Coord2Cell(t->GetCoords());
+			AnchorSource src{ type, TechnoTypeExt::UnifiedIndex(type), t->Owner, c.X, c.Y,
+				t->Veterancy.IsElite() ? SWExt::Rank::Elite
+					: t->Veterancy.IsVeteran() ? SWExt::Rank::Veteran : SWExt::Rank::Rookie,
+				true };
+			if (auto b = abstract_cast<BuildingClass*>(t))
+				src.powered = b->IsPowerOnline();
+			AnchorSources.push_back(src);
+		}
+	}
+
+	// One techno that counts for a rule, with its radius in cells.
+	struct Anchor { short x, y; int range; int typeIdx; TechnoTypeClass* type; };
+
+	long long Dist2(int ax, int ay, int bx, int by)
+	{
+		const long long dx = ax - bx, dy = ay - by;
+		return dx * dx + dy * dy;
+	}
+
+	// The technos matching `a` for a strike fired by `firer`. `swRule` is the
+	// strike SW's own SWExt rule, used when the pool says "sw".
+	std::vector<Anchor> MatchAnchors(const AnchorRule& a, bool designator,
+		const SWExt::Rule* swRule, HouseClass* firer)
+	{
+		std::vector<Anchor> out;
+		if (a.set == AnchorSet::Off || (a.set == AnchorSet::SW && (!swRule || !swRule->Active())))
+			return out;
+		const unsigned houses = (a.set == AnchorSet::SW && !a.housesSet)
+			? (unsigned)static_cast<unsigned char>(swRule->Affects) : a.houses;
+		const bool needPower = (a.set == AnchorSet::SW && !a.powerSet) ? swRule->RequirePower : a.requirePower;
+		RefreshAnchorSources();
+		for (const auto& src : AnchorSources)
+		{
+			int range = -1;
+			if (a.set == AnchorSet::List)
+			{
+				size_t k = 0;
+				while (k < a.typeIdx.size() && a.typeIdx[k] != src.typeIdx)
+					++k;
+				if (k == a.typeIdx.size())
+					continue;
+				range = k < a.ranges.size() ? a.ranges[k] : -1;
+			}
+			else if (a.set == AnchorSet::Any)
+				range = a.ranges.size() == 1 ? a.ranges[0] : -1;
+			else
+			{
+				if (!swRule->CoversType(src.typeIdx))
+					continue;
+				range = swRule->OverrideRangeFor(src.typeIdx);
+			}
+			const unsigned rel = src.owner == firer ? REL_OWNER
+				: (firer && src.owner && firer->IsAlliedWith(src.owner)) ? REL_ALLIES : REL_ENEMIES;
+			if (!(houses & rel))
+				continue;
+			if (a.players && src.owner)
+			{
+				const bool human = src.owner->IsControlledByHuman();
+				if ((a.players == 1) != human)
+					continue;
+			}
+			if (needPower && !src.powered)
+				continue;
+			if (range < 0)
+			{
+				auto ext = TechnoTypeExt::ExtMap.Find(src.type);
+				range = ext ? (designator ? ext->DesignatorRange : ext->InhibitorRange).Resolve(src.vet, src.type->Sight)
+					: src.type->Sight;
+			}
+			if (range <= 0)
+				continue;
+			out.push_back({ src.x, src.y, range, src.typeIdx, src.type });
+		}
+		return out;
+	}
+
+	// Index of the anchor covering `c` nearest its center, or -1.
+	int CoveringAnchor(const std::vector<Anchor>& list, CellStruct c)
+	{
+		int best = -1;
+		long long bestD = 0;
+		for (int i = 0; i < (int)list.size(); ++i)
+		{
+			const long long d = Dist2(c.X, c.Y, list[i].x, list[i].y);
+			const long long r = list[i].range;
+			if (d <= r * r && (best < 0 || d < bestD))
+			{
+				best = i;
+				bestD = d;
+			}
+		}
+		return best;
+	}
+
+	bool Usable(CellStruct c)
+	{
+		return MapClass::Instance.IsWithinUsableArea(c, true);
+	}
+
+	long long ISqrt(long long v)
+	{
+		if (v <= 0)
+			return 0;
+		long long r = (long long)std::sqrt((double)v);
+		while (r * r > v) --r;
+		while ((r + 1) * (r + 1) <= v) ++r;
+		return r;
+	}
+
+	// The cell `dist` cells from `o` along (dx,dy). Integer math, so every
+	// client lands on the same cell.
+	CellStruct RayCell(CellStruct o, int dx, int dy, int dist)
+	{
+		const long long len = ISqrt((long long)dx * dx + (long long)dy * dy);
+		if (len == 0)
+			return o;
+		auto step = [&](int d) {
+			const long long n = (long long)d * dist * 2;
+			return static_cast<short>((n + (n >= 0 ? len : -len)) / (2 * len));
+		};
+		return CellStruct{ static_cast<short>(o.X + step(dx)), static_cast<short>(o.Y + step(dy)) };
+	}
+
+	void RandomDir(int& dx, int& dy)
+	{
+		auto& rng = ScenarioClass::Instance->Random;
+		do
+		{
+			dx = rng.RandomRanged(-64, 64);
+			dy = rng.RandomRanged(-64, 64);
+		} while (dx == 0 && dy == 0);
+	}
+
+	// A random cell rLo..rHi cells from `o` (uniform over the ring's area).
+	bool RingCell(CellStruct o, int rLo, int rHi, CellStruct& out)
+	{
+		if (rHi <= 0)
+		{
+			out = o;
+			return true;
+		}
+		auto& rng = ScenarioClass::Instance->Random;
+		const long long lo2 = (long long)rLo * rLo, hi2 = (long long)rHi * rHi;
+		for (int tries = 0; tries < 32; ++tries)
+		{
+			const int dx = rng.RandomRanged(-rHi, rHi), dy = rng.RandomRanged(-rHi, rHi);
+			const long long d = (long long)dx * dx + (long long)dy * dy;
+			if (d < lo2 || d > hi2)
+				continue;
+			out = CellStruct{ static_cast<short>(o.X + dx), static_cast<short>(o.Y + dy) };
+			return true;
+		}
+		return false;
+	}
+
+	const std::vector<int>& AnchorChances(const AnchorRule& a, int typeIdx)
+	{
+		for (auto& tc : a.typeChancesIdx)
+			if (tc.first == typeIdx)
+				return tc.second;
+		return a.chances;
+	}
+
+	int RollOutcome(const std::vector<int>& chances)
+	{
+		static const std::vector<int> outcomes{ 0, 1, 2, 3 };
+		return PickWeighted(outcomes, chances);
+	}
+
+	int RollRange(int lo, int hi)
+	{
+		return hi > lo ? ScenarioClass::Instance->Random.RandomRanged(lo, hi) : lo;
+	}
+
+	const char* const InhibitOutcome[] = { "elsewhere", "edge", "ignore", "cancel" };
+	const char* const DesignOutcome[] = { "ignore", "edge", "center", "inside" };
+
+	// A random usable cell outside every inhibitor in `list`.
+	bool ElsewhereCell(const std::vector<Anchor>& list, CellStruct& out)
+	{
+		for (int tries = 0; tries < 64; ++tries)
+		{
+			const CellStruct c = PickTargetCell(TargetMode::Random);
+			if (CoveringAnchor(list, c) < 0)
+			{
+				out = c;
+				return true;
+			}
+		}
+		return false;
+	}
+
+	// Designators: pull `cell` toward the nearest one in reach.
+	CellStruct ApplyDesignators(const AnchorRule& a, const std::vector<Anchor>& list,
+		CellStruct cell, const char* pool)
+	{
+		int best = -1;
+		long long bestD = 0;
+		for (int i = 0; i < (int)list.size(); ++i)
+		{
+			const long long d = Dist2(cell.X, cell.Y, list[i].x, list[i].y);
+			if (a.reach > 0)
+			{
+				const long long lim = (long long)list[i].range + a.reach;
+				if (d > lim * lim)
+					continue;
+			}
+			if (best < 0 || d < bestD)
+			{
+				best = i;
+				bestD = d;
+			}
+		}
+		if (best < 0)
+			return cell;
+		const Anchor& D = list[best];
+		const CellStruct center{ D.x, D.y };
+		const int outcome = RollOutcome(AnchorChances(a, D.typeIdx));
+		CellStruct out = cell;
+		switch (outcome)
+		{
+		case 1: // edge: in from the radius on the side facing the strike
+			if (bestD > (long long)D.range * D.range)
+			{
+				const int dist = std::max(0, D.range - RollRange(a.edgeLo, a.edgeHi));
+				out = RayCell(center, cell.X - D.x, cell.Y - D.y, dist);
+			}
+			break;
+		case 2: // center
+			out = center;
+			break;
+		case 3: // inside: anywhere within the radius
+			if (!RingCell(center, 0, D.range, out))
+				out = center;
+			break;
+		default:
+			break;
+		}
+		if (!Usable(out))
+			out = Usable(center) && outcome != 0 ? center : cell;
+		if (Dbg(Cat::Anchors))
+			Debug::Log("[WeatherExt] frame %d: pool '%s' strike %d,%d: designator %s at %d,%d "
+				"(radius %d) -> %s -> %d,%d\n", Unsorted::CurrentFrame, pool, cell.X, cell.Y,
+				D.type->ID, D.x, D.y, D.range, DesignOutcome[outcome], out.X, out.Y);
+		return out;
+	}
+
+	// Inhibitors: move `cell` out of them (or let it through, or cancel it).
+	// Returns false when the strike is cancelled.
+	bool ApplyInhibitors(const AnchorRule& a, const std::vector<Anchor>& list,
+		CellStruct& cell, const char* pool)
+	{
+		const int hit = CoveringAnchor(list, cell);
+		if (hit < 0)
+			return true;
+		const Anchor& T = list[hit];
+		const CellStruct from = cell;
+		const CellStruct center{ T.x, T.y };
+		int outcome = RollOutcome(AnchorChances(a, T.typeIdx));
+		bool ok = true;
+		auto legal = [&](CellStruct c) { return Usable(c) && CoveringAnchor(list, c) < 0; };
+		switch (outcome)
+		{
+		case 1: // edge: a ring just outside the radius
+		{
+			int dx = cell.X - T.x, dy = cell.Y - T.y;
+			if (dx == 0 && dy == 0)
+				RandomDir(dx, dy);
+			bool placed = false;
+			// 1. straight out from the inhibitor through the target
+			int dist = T.range + 1 + RollRange(a.edgeLo, a.edgeHi);
+			CellStruct c = RayCell(center, dx, dy, dist);
+			if (legal(c))
+				placed = true;
+			// 2. further out along that line, past any overlapping inhibitor
+			for (int k = 1; !placed && k <= 128; ++k)
+			{
+				c = RayCell(center, dx, dy, dist + k);
+				placed = legal(c);
+			}
+			// 3. other directions around this inhibitor
+			for (int k = 0; !placed && k < 16; ++k)
+			{
+				RandomDir(dx, dy);
+				c = RayCell(center, dx, dy, T.range + 1 + RollRange(a.edgeLo, a.edgeHi));
+				placed = legal(c);
+			}
+			if (placed)
+				cell = c;
+			else
+			{
+				outcome = 0; // no legal ring cell: fall back to elsewhere
+				ok = ElsewhereCell(list, cell);
+			}
+			break;
+		}
+		case 2: // ignore
+			break;
+		case 3: // cancel
+			ok = false;
+			break;
+		default: // elsewhere
+			ok = ElsewhereCell(list, cell);
+			break;
+		}
+		if (Dbg(Cat::Anchors))
+			Debug::Log("[WeatherExt] frame %d: pool '%s' strike %d,%d: inhibitor %s at %d,%d "
+				"(radius %d) -> %s -> %s %d,%d\n", Unsorted::CurrentFrame, pool, from.X, from.Y,
+				T.type->ID, T.x, T.y, T.range, InhibitOutcome[outcome], ok ? "lands" : "cancelled",
+				cell.X, cell.Y);
+		return ok;
+	}
+
+	// The strike SW's own SWExt rules, for anchors set to "sw".
+	const SWTypeExt::ExtData* StrikeSWExt(int sw)
+	{
+		if (sw < 0 || sw >= SuperWeaponTypeClass::Array.Count)
+			return nullptr;
+		return SWTypeExt::ExtMap.Find(SuperWeaponTypeClass::Array.GetItem(sw));
+	}
+
+	// Designators then inhibitors. Returns false when the strike is cancelled.
+	bool PlaceStrike(const PoolParams& P, HouseClass* firer, int sw, CellStruct& cell, const char* pool)
+	{
+		if (P.desig.set == AnchorSet::Off && P.inhib.set == AnchorSet::Off)
+			return true;
+		auto ext = StrikeSWExt(sw);
+		if (P.desig.set != AnchorSet::Off)
+		{
+			auto list = MatchAnchors(P.desig, true, ext ? &ext->Designators : nullptr, firer);
+			if (!list.empty())
+				cell = ApplyDesignators(P.desig, list, cell, pool);
+		}
+		if (P.inhib.set != AnchorSet::Off)
+		{
+			auto list = MatchAnchors(P.inhib, false, ext ? &ext->Inhibitors : nullptr, firer);
+			if (!list.empty())
+				return ApplyInhibitors(P.inhib, list, cell, pool);
+		}
+		return true;
+	}
+
+	// ---- bursts (rev 6) ------------------------------------------------------
+	struct PendingBurst
+	{
+		int pool, band;
+		HouseClass* owner;
+		CellStruct center, last;
+		int left;      // hits still to land
+		int next;      // frame of the next hit
+		int sw, fx;    // the shot's picks, for "same"
+		int total;
+	};
+	std::vector<PendingBurst> PendingBursts;
+	constexpr size_t MAX_PENDING_BURSTS = 2000;
+
+	int RollBurstCount(const PoolParams& P, int w)
+	{
+		long long n = RollRange(P.burstLo, P.burstHi);
+		if (P.burstAdd != 0 && w > 0)
+			n += (long long)(w / P.burstAddPer) * P.burstAdd;
+		return (int)std::clamp(n, 1LL, (long long)(P.burstMax > 0 ? P.burstMax : 100));
+	}
+
+	// One hit of a burst. Returns SWs launched + effects started.
+	int BurstHit(const PoolParams& P, PendingBurst& b, bool first, const char* pool)
+	{
+		CellStruct c = P.burstWalk ? b.last : b.center;
+		if (!(first && P.burstFirstAtCenter))
+		{
+			std::vector<Anchor> inhibitors;
+			if (P.burstAnchors && P.inhib.set != AnchorSet::Off)
+			{
+				auto ext = StrikeSWExt(b.sw);
+				inhibitors = MatchAnchors(P.inhib, false, ext ? &ext->Inhibitors : nullptr, b.owner);
+			}
+			bool placed = false;
+			CellStruct origin = c;
+			for (int tries = 0; tries < 16 && !placed; ++tries)
+				placed = RingCell(origin, P.burstRadLo, P.burstRadHi, c) && Usable(c)
+					&& CoveringAnchor(inhibitors, c) < 0;
+			if (!placed)
+			{
+				if (Dbg(Cat::Bursts))
+					Debug::Log("[WeatherExt] frame %d: pool '%s' burst around %d,%d: no free cell "
+						"for hit %d of %d; skipped\n", Unsorted::CurrentFrame, pool, origin.X, origin.Y,
+						b.total - b.left + 1, b.total);
+				return 0;
+			}
+		}
+		const int sw = P.burstSWMode == 0 || first ? b.sw : P.burstSWMode == 1 ? -1
+			: PickWeighted(P.burstSWIdx, P.burstSWChances);
+		const int fx = P.burstFxMode == 0 || first ? b.fx : P.burstFxMode == 1 ? -1
+			: PickWeighted(P.burstFxIdx, P.burstFxChances);
+		int launched = 0;
+		if (sw >= 0 && FireOneSW(b.owner, sw, P.grant, c, P.ownRules))
+			++launched;
+		if (fx >= 0)
+		{
+			StartEffect(fx, b.owner, c);
+			++launched;
+		}
+		b.last = c;
+		LastTargetCell = c;
+		if (!first && Dbg(Cat::Bursts))
+			Debug::Log("[WeatherExt] frame %d: pool '%s' burst hit %d of %d at %d,%d (center %d,%d)\n",
+				Unsorted::CurrentFrame, pool, b.total - b.left + 1, b.total, c.X, c.Y,
+				b.center.X, b.center.Y);
+		return launched;
+	}
+
 	// Fire one shot for the pool: Strike.Count times, each a picked SW and/or a
-	// picked strike effect. Returns the number of SWs launched + effects started.
-	int FirePoolShot(const PoolParams& P, int w)
+	// picked strike effect, placed by the anchors and spread into a burst.
+	// Returns the number of SWs launched + effects started this frame.
+	int FirePoolShot(Pool& pool, const PoolParams& P, int w)
 	{
 		long long count = P.count;
 		if (P.countAdd != 0 && w > 0)
@@ -1849,15 +2577,24 @@ namespace
 
 		const bool eachHuman = _strcmpi(P.owner.c_str(), "each-human") == 0;
 		const bool eachPlayer = _strcmpi(P.owner.c_str(), "each-player") == 0;
+		const int poolIdx = (int)(&pool - Pools.data());
+		const char* name = pool.Name.c_str();
 		int launched = 0;
 		auto fireFor = [&](HouseClass* pH, int sw, int fx) {
-			const CellStruct cell = PickTargetCell(P.target);
-			if (sw >= 0 && FireOneSW(pH, sw, P.grant, cell))
-				++launched;
-			if (fx >= 0)
+			CellStruct cell = PickTargetCell(P.target);
+			if (!PlaceStrike(P, pH, sw, cell, name))
+				return;
+			PendingBurst b{ poolIdx, pool.band, pH, cell, cell, RollBurstCount(P, w), 0, sw, fx, 0 };
+			b.total = b.left;
+			launched += BurstHit(P, b, true, name);
+			if (--b.left > 0 && PendingBursts.size() < MAX_PENDING_BURSTS)
 			{
-				StartEffect(fx, pH, cell);
-				++launched;
+				b.next = Unsorted::CurrentFrame + RollRange(P.burstGapLo, P.burstGapHi);
+				PendingBursts.push_back(b);
+				if (Dbg(Cat::Bursts))
+					Debug::Log("[WeatherExt] frame %d: pool '%s' burst of %d at %d,%d (radius %d-%d, "
+						"gap %d-%df%s)\n", Unsorted::CurrentFrame, name, b.total, cell.X, cell.Y,
+						P.burstRadLo, P.burstRadHi, P.burstGapLo, P.burstGapHi, P.burstWalk ? ", walking" : "");
 			}
 		};
 		for (int k = 0; k < (int)count; ++k)
@@ -1882,6 +2619,35 @@ namespace
 				fireFor(ResolveFiringHouse(P.owner), sw, fx);
 		}
 		return launched;
+	}
+
+	// Land the follow-up hits that are due. Same-frame hits (gap 0) all land
+	// now; otherwise one per due burst, then it waits its next gap.
+	void TickBursts()
+	{
+		const int now = Unsorted::CurrentFrame;
+		size_t w = 0;
+		for (size_t r = 0; r < PendingBursts.size(); ++r)
+		{
+			PendingBurst b = PendingBursts[r];
+			if (b.pool < 0 || b.pool >= (int)Pools.size() || b.band < 0
+				|| b.band >= (int)Pools[b.pool].bands.size())
+				continue;
+			const Pool& pool = Pools[b.pool];
+			const PoolParams& P = pool.bands[b.band];
+			while (b.left > 0 && now >= b.next)
+			{
+				BurstHit(P, b, false, pool.Name.c_str());
+				--b.left;
+				const int gap = RollRange(P.burstGapLo, P.burstGapHi);
+				b.next = now + gap;
+				if (gap > 0)
+					break;
+			}
+			if (b.left > 0)
+				PendingBursts[w++] = b;
+		}
+		PendingBursts.resize(w);
 	}
 
 	void TickPool(Pool& pool)
@@ -1951,7 +2717,7 @@ namespace
 			const int i = (pool.cursor + k) % n;
 			if (pool.timers[i] > 0)
 				continue;
-			const int launched = FirePoolShot(P, w);
+			const int launched = FirePoolShot(pool, P, w);
 			const int base = SlotBase(P, pat, w, i, n);
 			pool.totals[i] = base;
 			pool.timers[i] = base + RollSpread(P);
@@ -2071,6 +2837,64 @@ namespace
 					}
 				}
 			}
+			// anchors + bursts (rev 6): techno, SW and effect names
+			auto techno = [&](const std::string& n, const char* key) -> int {
+				TechnoTypeClass* t = TechnoTypeClass::Find(n.c_str());
+				if (!t)
+				{
+					Debug::Log("[WeatherExt] pool '%s' %s names unknown techno type '%s'; "
+						"skipped.\n", pool.Name.c_str(), key, n.c_str());
+					return -1;
+				}
+				return TechnoTypeExt::UnifiedIndex(t);
+			};
+			auto resolveAnchor = [&](AnchorRule& a, const char* key) {
+				a.typeIdx.clear();
+				std::vector<int> ranges;
+				for (size_t k = 0; k < a.typeNames.size(); ++k)
+				{
+					const int idx = techno(a.typeNames[k], key);
+					if (idx < 0)
+						continue;
+					a.typeIdx.push_back(idx);
+					ranges.push_back(k < a.ranges.size() ? a.ranges[k] : -1);
+				}
+				if (a.set == AnchorSet::List)
+					a.ranges = ranges;
+				a.typeChancesIdx.clear();
+				for (auto& tc : a.typeChances)
+				{
+					const int idx = techno(tc.first, key);
+					if (idx >= 0)
+						a.typeChancesIdx.push_back({ idx, tc.second });
+				}
+			};
+			for (auto& P : pool.bands)
+			{
+				resolveAnchor(P.inhib, "Inhibitors");
+				resolveAnchor(P.desig, "Designators");
+				P.burstSWIdx.clear();
+				for (auto& n : P.burstSWNames)
+				{
+					const int idx = SuperWeaponTypeClass::FindIndex(n.c_str());
+					if (idx < 0)
+						Debug::Log("[WeatherExt] pool '%s' Burst.SW names unknown superweapon "
+							"'%s'; skipped.\n", pool.Name.c_str(), n.c_str());
+					else
+						P.burstSWIdx.push_back(idx);
+				}
+				P.burstFxIdx.clear();
+				for (auto& n : P.burstFxNames)
+				{
+					auto it = EffectIndex.find(n);
+					if (it == EffectIndex.end())
+						Debug::Log("[WeatherExt] pool '%s' Burst.Effect names unknown effect "
+							"'%s'; skipped.\n", pool.Name.c_str(), n.c_str());
+					else
+						P.burstFxIdx.push_back(it->second);
+				}
+			}
+
 			if (pool.sysNames.empty())
 				Debug::Log("[WeatherExt] pool '%s' has no Weight.Systems; it never fires.\n",
 					pool.Name.c_str());
@@ -2299,9 +3123,10 @@ void Weather::ReadGlobals(CCINIClass* pINI)
 		std::vector<std::string> wanted;
 		for (auto& p : Pools)
 			for (auto& P : p.bands)
-				for (auto& n : P.fxNames)
-					if (std::find(wanted.begin(), wanted.end(), n) == wanted.end())
-						wanted.push_back(n);
+				for (const auto* list : { &P.fxNames, &P.burstFxNames })
+					for (auto& n : *list)
+						if (std::find(wanted.begin(), wanted.end(), n) == wanted.end())
+							wanted.push_back(n);
 		for (auto& n : wanted)
 		{
 			auto it = EffectIndex.find(n);
@@ -2330,6 +3155,8 @@ void Weather::ReadGlobals(CCINIClass* pINI)
 		}
 	}
 	PendingStrikes.clear();
+	PendingBursts.clear();
+	AnchorSourcesFrame = -1;
 	AnimWatches.clear();
 	AnimWatchSeq = 0;
 
@@ -2370,6 +3197,16 @@ void Weather::ReadGlobals(CCINIClass* pINI)
 				p.bands.size(), P.perWeight, P.slotsMin, P.slotsMax,
 				CentiToFrames(P.rMinC), CentiToFrames(P.rMaxC), P.shaveC, P.shavePer,
 				P.spreadLo, P.spreadHi, P.patterns.size(), P.swNames.size(), P.owner.c_str());
+			static const char* const setName[] = { "off", "list", "any", "sw" };
+			Debug::Log("[WeatherExt]     inhibitors=%s (%zu types, chances %d/%d/%d/%d, edge %d-%d) "
+				"designators=%s (%zu types, chances %d/%d/%d/%d, reach %d) burst=%d-%d hits, "
+				"radius %d-%d, gap %d-%df, ownRules=%s\n",
+				setName[(int)P.inhib.set], P.inhib.typeNames.size(), P.inhib.chances[0],
+				P.inhib.chances[1], P.inhib.chances[2], P.inhib.chances[3], P.inhib.edgeLo, P.inhib.edgeHi,
+				setName[(int)P.desig.set], P.desig.typeNames.size(), P.desig.chances[0],
+				P.desig.chances[1], P.desig.chances[2], P.desig.chances[3], P.desig.reach,
+				P.burstLo, P.burstHi, P.burstRadLo, P.burstRadHi, P.burstGapLo, P.burstGapHi,
+				P.ownRules ? "yes" : "no");
 		}
 	}
 }
@@ -2562,13 +3399,57 @@ void Weather::OnSuperWeaponFired(HouseClass* pHouse, int swSlotIndex)
 	}
 }
 
+// After Verses: `result` is the engine's damage x Verses, `damage` the input
+// after distance falloff (our entry factor included). Add the flat Verses and
+// clamp the effective Verses (result / weather-free damage).
+int Weather::AdjustDamageTail(int result, int damage, WarheadTypeClass* pWH)
+{
+	DamageTailState& t = DamageTail;
+	if (!t.active)
+		return result;
+	t.active = false;
+	if (t.wh != pWH || damage <= 0 || t.factor <= 0.0)
+		return result;
+	const double base = damage / t.factor;
+	double r = result + base * t.add;
+	if (t.clamp)
+		r = std::clamp(r, base * t.lo, base * t.hi);
+	const int adjusted = static_cast<int>(std::lround(r));
+	if (adjusted != result && Dbg(Cat::Damage))
+	{
+		Debug::Log("[WeatherExt] frame %d: %s after Verses %d -> %d (add %+.0f%%%s)\n",
+			Unsorted::CurrentFrame, pWH ? pWH->ID : "?", result, adjusted, t.add * 100.0,
+			t.clamp ? ", clamped" : "");
+	}
+	return adjusted;
+}
+
 bool Weather::IsBypassingSWRules()
 {
 	return BypassSWRules;
 }
 
+namespace
+{
+	// What the GetTotalDamage entry decided, for the tail hook after Verses
+	// (Versus.<WH>.Add / .Clamp). thread_local: damage can be computed off the
+	// main thread (PerfExt workers), and entry and tail always run on the same
+	// thread, one call apart.
+	struct DamageTailState
+	{
+		bool active = false;
+		WarheadTypeClass* wh = nullptr;
+		double factor = 1.0;   // the weather multiplier applied at entry
+		double add = 0.0;      // flat Verses to add, fraction
+		bool clamp = false;
+		double lo = 0.0, hi = 0.0;
+	};
+	thread_local DamageTailState DamageTail;
+}
+
 int Weather::AdjustDamage(int damage, WarheadTypeClass* pWH, int armor)
 {
+	DamageTail.active = false;
 	if (!Config.Enabled || damage == 0 || (!anyVersus && !anyGlobalDamage))
 		return damage;
 	if (!finalized)
@@ -2589,12 +3470,37 @@ int Weather::AdjustDamage(int damage, WarheadTypeClass* pWH, int armor)
 		}
 
 	// Per-warhead Versus curves.
+	double add = 0.0;
+	bool clamp = false;
+	double lo = -1e18, hi = 1e18;
 	if (pWH)
 	{
 		auto it = WarheadVersusMap.find(pWH);
 		if (it != WarheadVersusMap.end())
 			for (const auto& rv : it->second)
-				factor *= EvalVersus(*rv.curve, Meters[rv.meterIdx].Amount, armor);
+			{
+				const int amount = Meters[rv.meterIdx].Amount;
+				factor *= EvalVersus(*rv.curve, amount, armor);
+				add += EvalVersusAdd(*rv.curve, amount, armor);
+				if (rv.curve->hasClamp)
+				{
+					// several meters on one warhead: the tightest bounds win
+					clamp = true;
+					lo = std::max(lo, rv.curve->clampLo);
+					hi = std::min(hi, rv.curve->clampHi);
+				}
+			}
+	}
+
+	if (add != 0.0 || clamp)
+	{
+		DamageTail.active = true;
+		DamageTail.wh = pWH;
+		DamageTail.factor = factor;
+		DamageTail.add = add;
+		DamageTail.clamp = clamp;
+		DamageTail.lo = lo;
+		DamageTail.hi = std::max(lo, hi);
 	}
 
 	if (factor == 1.0)
@@ -2749,6 +3655,8 @@ void Weather::FrameTick()
 	if (anyPools)
 		for (auto& pool : Pools)
 			TickPool(pool);
+	if (!PendingBursts.empty())
+		TickBursts();
 
 	// --- strike effects in flight (clouds waiting to bolt) ---
 	if (!PendingStrikes.empty())
@@ -2862,6 +3770,23 @@ DEFINE_HOOK(0x489180, MapClass_GetTotalDamage_WeatherExt, 0x6)
 	const int adjusted = Weather::AdjustDamage(damage, pWH, armor);
 	if (adjusted != damage)
 		R->ECX(adjusted);
+	return 0;
+}
+
+// GetTotalDamage right after the Verses multiply (0x489249): EAX = damage x
+// Verses, ECX = the damage it multiplied, EDI = warhead. Antares' Verses hook
+// (0x489235) returns straight here, and so does the vanilla path. Stolen 6:
+// `mov ecx, ds:[0x8871E0]` -- one instruction, no relative branch. The
+// MaxDamage cap after it still applies to our result. Fast-returns unless
+// the entry hook flagged a Versus Add/Clamp for this call.
+DEFINE_HOOK(0x489249, MapClass_GetTotalDamage_WeatherTail, 0x6)
+{
+	GET(int, result, EAX);
+	GET(int, damage, ECX);
+	GET(WarheadTypeClass*, pWH, EDI);
+	const int adjusted = Weather::AdjustDamageTail(result, damage, pWH);
+	if (adjusted != result)
+		R->EAX(adjusted);
 	return 0;
 }
 
