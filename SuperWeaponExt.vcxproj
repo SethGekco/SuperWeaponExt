@@ -55,6 +55,7 @@
     <ClInclude Include="src\Ext\SWType\Body.h" />
     <ClInclude Include="src\Ext\TechnoType\Body.h" />
     <ClInclude Include="src\Ext\Techno\StandingOrders.h" />
+    <ClInclude Include="src\Ext\Techno\WeaponSelect.h" />
     <ClInclude Include="src\Commands\FireNamedSW.h" />
   </ItemGroup>
 

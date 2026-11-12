@@ -24,30 +24,70 @@
  *   2. Hook a `ret`. The function has several return paths, so this needs one
  *      hook per exit and still lands inside a heavily-hooked body.
  *
- * SelectWeapon is VIRTUAL (`YRpp/TechnoClass.h:227`), and `0x6F3330` is
- * referenced by exactly four .rdata vtable slots — one per TechnoClass subclass.
- * Replacing those slots gives a wrapper that CALLS the original, so every
- * framework hook inside still runs and decides first, and we only adjust the
- * answer afterwards. Same architecture as the Layer 3 cursor wrapper in
- * Hooks.Cursor.cpp, which is already verified in game.
+ * SelectWeapon is VIRTUAL (`YRpp/TechnoClass.h:227`). Replacing the vtable slot
+ * gives a wrapper that CALLS the original, so every framework hook inside still
+ * runs and decides first, and we only adjust the answer afterwards. Same
+ * architecture as the Layer 3 cursor wrapper in Hooks.Cursor.cpp.
  *
- * ⚠ The four slots are unclaimed: no Phobos or Antares source references them
- * and the hook registry has no rows for them. Verified before writing this.
+ * ============================================================================
+ * ⚠ SIX SLOTS, THREE DIFFERENT ORIGINALS — the bug this file shipped with
+ * ============================================================================
  *
- * They are also confirmed to be REAL vtable entries rather than raw bytes that
- * happen to equal 0x6F3330: every neighbouring word at each of the four
- * addresses is a valid .text pointer, and all four are followed by the same next
- * virtual (0x6F3820). AircraftClass::AbsVTable is 0x7E22A4, and 0x7E2588 sits a
- * whole number of slots past it.
+ * The first version of this file searched the binary for references to
+ * `0x6F3330`, found exactly four .rdata vtable slots, and concluded "one per
+ * TechnoClass subclass". That reasoning is INVALID, and the conclusion was
+ * wrong: UnitClass and InfantryClass OVERRIDE SelectWeapon, so their slots do
+ * not contain `0x6F3330` and a search for references to it structurally cannot
+ * find them. The count of four was read as confirmation of coverage when it was
+ * really just the number of classes that DON'T override.
+ *
+ * Dumped straight out of gamemd-spawn.exe (slot = AbsVTable + 0x2E4):
+ *
+ *   class         AbsVTable    slot        holds
+ *   Aircraft      0x7E22A4     0x7E2588    0x6F3330   TechnoClass::SelectWeapon
+ *   Building      0x7E3EBC     0x7E41A0    0x6F3330
+ *   FootClass     0x7E8C94     0x7E8F78    0x6F3330   (abstract: no live object)
+ *   TechnoClass   0x7F4960     0x7F4C44    0x6F3330   (abstract: no live object)
+ *   Infantry      0x7EB058     0x7EB33C    0x5218E0   InfantryClass::SelectWeapon
+ *   Unit          0x7F5C70     0x7F5F54    0x746CD0   UnitClass::SelectWeapon
+ *
+ * So the shipped wrapper was live for AIRCRAFT AND BUILDINGS ONLY — the other
+ * two patched slots belong to abstract bases nothing instantiates. Every rule
+ * configured on a vehicle or an infantryman silently did nothing, which is
+ * exactly why no log in any test game ever contained a `weapon N -> M` line.
+ * Found by the PerfExt session, 2026-11-11, and confirmed against the binary.
+ *
+ * ⚠ Each slot must call ITS OWN original. Wrapping the Unit slot but calling
+ * `0x6F3330` would skip UnitClass::SelectWeapon entirely — so the three thin
+ * wrappers below differ only in which address they call.
+ *
+ * All six slots are unclaimed: no Phobos or Antares source references them and
+ * the hook registry has no rows for them.
  *
  * ============================================================================
  * DETERMINISM
  * ============================================================================
  *
- * Weapon choice feeds combat, which is synced. This wrapper therefore reads only
- * type data and the target's identity — never the local player, the cursor, or
- * the view — so every client picks the same weapon. It is a pure function of
- * (firer type, target type, rules).
+ * Weapon choice feeds combat, which is synced, and this wrapper also runs on
+ * PerfExt's worker threads during look-ahead target checks. It is therefore
+ * STRICTLY READ-ONLY: every table it consults is built on the game thread from
+ * the shared frame tick (`SWExt::WeaponSelect::FrameTick`), and the wrapper
+ * itself allocates nothing and mutates nothing. The one exception is the
+ * diagnostic log, which is guarded by a mutex and is not game state.
+ *
+ * ⚠ WHY THE SNAPSHOT MUST BE BUILT FROM THE TICK AND NOT ON FIRST USE.
+ * The WhileNear rules need the POSITIONS of other objects, not just type data.
+ * The first version built that list lazily, on the first weapon choice of each
+ * frame. The list contents are synced, but the INSTANT it was sampled was not:
+ * weapon choice also runs from cursor drawing, so on a client whose mouse was
+ * over a unit the snapshot was taken before the object loop, and on a client
+ * whose mouse was elsewhere it was taken part-way through it. Same frame,
+ * different unit positions, different weapon, desync. Building it once at the
+ * post-loop tick makes the sampling point identical on every client.
+ *
+ * The old header claimed determinism on the grounds that the wrapper "reads only
+ * type data and the target's identity". That was true of the Vs* rules and false
+ * of the WhileNear* ones.
  */
 #include <Ext/SWType/Body.h>
 #include <Ext/TechnoType/Body.h>
@@ -55,13 +95,18 @@
 #include <SuperWeaponTypeClass.h>
 #include <CellClass.h>
 #include <Fundamentals.h>
+#include <InfantryClass.h>
 #include <TechnoClass.h>
 #include <TechnoTypeClass.h>
+#include <UnitClass.h>
 #include <Utilities/Debug.h>
 #include <Utilities/Macro.h>
 
+#include <Ext/Techno/WeaponSelect.h>
+
 #include <algorithm>
 #include <cstdint>
+#include <mutex>
 #include <utility>
 #include <vector>
 
@@ -77,10 +122,17 @@ namespace
     // The cache is a union across all superweapons. The per-superweapon form
     // ("honor indexes") is answered directly from that SW's ext instead, since a
     // named SW needs no search.
+    //
+    // ⚠ Built ONLY from SWExt::WeaponSelect::FrameTick, on the game thread. The
+    // wrapper may run on a PerfExt worker thread, so it must never trigger a
+    // rebuild. Until the first tick has run, g_cacheReady is false and the Vs*
+    // rules simply do not apply — a one-frame warm-up that is identical on every
+    // client because it is keyed to the frame loop, not to wall clock.
     // -------------------------------------------------------------------------
     std::vector<int> g_inhibitorTypes;    // sorted unified type indices
     std::vector<int> g_designatorTypes;
-    int g_builtForCount = -1;             // SuperWeaponTypeClass::Array.Count when built
+    int  g_builtForCount = -1;            // SuperWeaponTypeClass::Array.Count when built
+    bool g_cacheReady    = false;
 
     void BuildCache()
     {
@@ -112,19 +164,12 @@ namespace
         }
 
         g_builtForCount = SuperWeaponTypeClass::Array.Count;
+        g_cacheReady    = true;
 
         Debug::Log("[SuperWeaponExt] weapon-select cache: %u inhibitor type(s), "
                    "%u designator type(s)\n",
                    static_cast<unsigned>(g_inhibitorTypes.size()),
                    static_cast<unsigned>(g_designatorTypes.size()));
-    }
-
-    void EnsureCache()
-    {
-        // Rebuilt when the superweapon array changes size, which is what a rules
-        // reload (new scenario, different mod) looks like from here.
-        if (g_builtForCount != SuperWeaponTypeClass::Array.Count)
-            BuildCache();
     }
 
     bool InSorted(const std::vector<int>& v, int value)
@@ -154,18 +199,27 @@ namespace
             return rule.CoversType(typeIndex);
         }
 
-        EnsureCache();
+        if (!g_cacheReady)
+            return false;
+
         return InSorted(wantInhibitor ? g_inhibitorTypes : g_designatorTypes, typeIndex);
     }
 
     // -------------------------------------------------------------------------
     // "Is this techno standing inside an inhibitor's / designator's radius?"
     //
-    // Built at most ONCE PER FRAME, and only when some loaded type actually asks
-    // for a WhileNear rule — weapon selection is called from targeting, cursor
-    // rendering, threat evaluation and firing, so a per-call scan of the techno
-    // array would be indefensible. The per-frame list is small (one entry per
-    // inhibitor/designator on the map), so the per-call test over it is cheap.
+    // Built ONCE PER FRAME from SWExt::WeaponSelect::FrameTick — the post-loop
+    // seat in LogicClass::AI — and never from the wrapper. Weapon selection is
+    // called from targeting, cursor rendering, threat evaluation and firing, so
+    // a per-call scan of the techno array would be indefensible; the per-frame
+    // list is small (one entry per inhibitor/designator on the map), so the
+    // per-call test over it is cheap.
+    //
+    // ⚠ The sampling point is the whole reason this lives in the tick. See the
+    // determinism note in the file header: building it at "the first weapon
+    // choice of the frame" samples object positions at a locally-determined
+    // instant and desyncs. Frame N's object loop reads the snapshot taken at the
+    // end of frame N-1, which every client took at the same place.
     //
     // ⚠ SIMPLIFICATION, deliberate and documented: the radius used here is the
     // TechnoType's veterancy-resolved InhibitorRange / DesignatorRange only. It
@@ -186,18 +240,15 @@ namespace
     };
 
     std::vector<Influence> g_influence;
-    int g_influenceFrame = -1;
+    bool g_influenceReady = false;
 
-    void EnsureInfluence()
+    void BuildInfluence()
     {
-        const int frame = Unsorted::CurrentFrame;
-        if (g_influenceFrame == frame)
-            return;
-
-        g_influenceFrame = frame;
         g_influence.clear();
+        g_influenceReady = true;
 
-        EnsureCache();
+        if (!g_cacheReady)
+            return;
 
         for (int i = 0; i < TechnoClass::Array.Count; ++i)
         {
@@ -242,10 +293,8 @@ namespace
 
     bool StandingInInfluence(TechnoClass* pTechno, bool wantInhibitor)
     {
-        if (!pTechno)
+        if (!pTechno || !g_influenceReady)
             return false;
-
-        EnsureInfluence();
 
         const auto cell = CellClass::Coord2Cell(pTechno->GetCoords());
 
@@ -271,16 +320,29 @@ namespace
     // some diagnostic is needed: whether the override fired is NOT reliably
     // visible in game, because the engine may pick a secondary weapon on its own
     // for unrelated reasons, so "it looked different" proves nothing.
+    //
+    // ⚠ This is the ONLY mutable state the wrapper touches, and the wrapper can
+    // run on a PerfExt worker thread, so it takes a lock. The lock is held
+    // across the Debug::Log call as well, so two threads cannot interleave
+    // halves of a line into the log file. It sits on the rare path — reached
+    // only once a rule has actually matched — so it costs nothing in the common
+    // case. It is diagnostics, never game state: no synced decision reads it.
     std::vector<std::pair<int, int>> g_logged;
+    std::mutex                       g_loggedLock;
 
-    bool ShouldLog(int firerIdx, int targetIdx)
+    void LogOnce(int firerIdx, int targetIdx, const char* firerId,
+                 const char* targetId, const char* why, int chosen, int override_)
     {
+        std::lock_guard<std::mutex> guard(g_loggedLock);
+
         for (auto const& e : g_logged)
             if (e.first == firerIdx && e.second == targetIdx)
-                return false;
+                return;
 
         g_logged.emplace_back(firerIdx, targetIdx);
-        return true;
+
+        Debug::Log("[SuperWeaponExt] %s vs %s (%s): weapon %d -> %d\n",
+                   firerId, targetId, why, chosen, override_);
     }
 
     // ⚠ CALLING CONVENTION — this crashed the game once already.
@@ -302,7 +364,9 @@ namespace
     //
     // Hooks.Cursor.cpp had the correct pattern the whole time; this file cited it
     // as the model and then failed to copy the signature.
-    using SelectWeaponFunc = int(__fastcall*)(TechnoClass*, void*, AbstractClass*);
+    using SelectWeaponFunc         = int(__fastcall*)(TechnoClass*, void*, AbstractClass*);
+    using UnitSelectWeaponFunc     = int(__fastcall*)(UnitClass*, void*, AbstractClass*);
+    using InfantrySelectWeaponFunc = int(__fastcall*)(InfantryClass*, void*, AbstractClass*);
 
     // The firer's type extension if it has a WeaponVs rule. Only such a firer
     // gets past the wrapper's first checks, to the cache rebuild and the log.
@@ -316,16 +380,10 @@ namespace
         return pTypeExt && pTypeExt->WeaponVs.Active() ? pTypeExt : nullptr;
     }
 
-    int __fastcall TechnoClass_SelectWeapon_Wrapper(TechnoClass* pThis,
-                                                    void* /* unused EDX */,
-                                                    AbstractClass* pTarget)
+    // The shared decision, applied to an answer the engine has already given.
+    // Strictly read-only apart from the mutex-guarded log.
+    int ApplyOverride(TechnoClass* pThis, AbstractClass* pTarget, int chosen)
     {
-        // Let the engine — and every framework hook inside it — decide first.
-        // Our result is an override of a real answer, never a replacement for
-        // running the function.
-        const auto original = reinterpret_cast<SelectWeaponFunc>(0x6F3330);
-        const int chosen = original(pThis, nullptr, pTarget);
-
         if (!pThis || !pTarget)
             return chosen;
 
@@ -376,29 +434,87 @@ namespace
                         : nearInhib ? "near inhibitor"
                                     : "near designator";
 
-        if (ShouldLog(TechnoTypeExt::UnifiedIndex(pType),
-                      TechnoTypeExt::UnifiedIndex(pTargetType)))
-        {
-            Debug::Log("[SuperWeaponExt] %s vs %s (%s): weapon %d -> %d\n",
-                       pType->ID, pTargetType->ID, why, chosen, override_);
-        }
+        LogOnce(TechnoTypeExt::UnifiedIndex(pType),
+                TechnoTypeExt::UnifiedIndex(pTargetType),
+                pType->ID, pTargetType->ID, why, chosen, override_);
 
         return override_;
     }
+
+    // -------------------------------------------------------------------------
+    // One thin wrapper per original. Each CALLS its own class's implementation
+    // so every framework hook inside it still runs and decides first — then
+    // ApplyOverride adjusts the answer. Pointing all three at 0x6F3330 would
+    // skip UnitClass's and InfantryClass's own overrides entirely.
+    // -------------------------------------------------------------------------
+    // ⚠ Plain functions, deliberately not a template parameterised on the
+    // original's address. DEFINE_FUNCTION_JUMP expands to `_asm mov eax,
+    // <function>`, which wants a function SYMBOL; handing it a function-pointer
+    // variable instead is at best ambiguous and relies on static init order for
+    // a patch that is applied at load time.
+    int __fastcall TechnoClass_SelectWeapon_Wrapper(TechnoClass* pThis,
+                                                    void* /* unused EDX */,
+                                                    AbstractClass* pTarget)
+    {
+        const auto original = reinterpret_cast<SelectWeaponFunc>(0x6F3330);
+        return ApplyOverride(pThis, pTarget, original(pThis, nullptr, pTarget));
+    }
+
+    int __fastcall UnitClass_SelectWeapon_Wrapper(UnitClass* pThis,
+                                                  void* /* unused EDX */,
+                                                  AbstractClass* pTarget)
+    {
+        const auto original = reinterpret_cast<UnitSelectWeaponFunc>(0x746CD0);
+        return ApplyOverride(pThis, pTarget, original(pThis, nullptr, pTarget));
+    }
+
+    int __fastcall InfantryClass_SelectWeapon_Wrapper(InfantryClass* pThis,
+                                                      void* /* unused EDX */,
+                                                      AbstractClass* pTarget)
+    {
+        const auto original = reinterpret_cast<InfantrySelectWeaponFunc>(0x5218E0);
+        return ApplyOverride(pThis, pTarget, original(pThis, nullptr, pTarget));
+    }
+}
+
+// =============================================================================
+// Built on the GAME THREAD from the shared per-frame tick. Everything the
+// wrapper reads is produced here, so the wrapper itself never writes and can
+// safely run on PerfExt's worker threads during look-ahead target checks.
+// =============================================================================
+void SWExt::WeaponSelect::FrameTick()
+{
+    // Rebuilt when the superweapon array changes size, which is what a rules
+    // reload (new scenario, different mod) looks like from here.
+    if (g_builtForCount != SuperWeaponTypeClass::Array.Count)
+        BuildCache();
+
+    BuildInfluence();
 }
 
 // For PerfExt, which runs target checks (and so this wrapper) ahead of time and
-// may run them on several threads: 1 if the wrapper can write for this firer
-// (the cache rebuild, the log-once list), so its target checks must stay
-// serial. Shares the wrapper's first condition, so the two can't drift apart.
-extern "C" __declspec(dllexport) int __cdecl SuperWeaponExt_TargetCheckWrites(TechnoClass* pScanner)
+// may run them on several threads: 1 if the wrapper can write for this firer,
+// so its target checks must stay serial.
+//
+// Now always 0. Every table the wrapper reads is built on the game thread by
+// FrameTick above, and the only remaining mutable state is the diagnostic log,
+// which holds a mutex across both its dedup list and its write. The wrapper
+// allocates nothing and mutates no game state on any path.
+//
+// ⚠ PerfExt's lane 3 reads this to choose parallel vs serial. Do NOT reintroduce
+// a write on the wrapper's path without changing this back to 1 and telling the
+// PerfExt session — a silent write here is a data race on their worker threads.
+extern "C" __declspec(dllexport) int __cdecl SuperWeaponExt_TargetCheckWrites(TechnoClass* /* pScanner */)
 {
-    return pScanner && WeaponVsExt(pScanner) ? 1 : 0;
+    return 0;
 }
 
-// One slot per TechnoClass subclass. All four resolve to 0x6F3330 in a stock
-// binary and none is claimed by Phobos, Antares or anything in the registry.
-DEFINE_FUNCTION_JUMP(VTABLE, 0x7E2588, TechnoClass_SelectWeapon_Wrapper);
-DEFINE_FUNCTION_JUMP(VTABLE, 0x7E41A0, TechnoClass_SelectWeapon_Wrapper);
-DEFINE_FUNCTION_JUMP(VTABLE, 0x7E8F78, TechnoClass_SelectWeapon_Wrapper);
-DEFINE_FUNCTION_JUMP(VTABLE, 0x7F4C44, TechnoClass_SelectWeapon_Wrapper);
+// Six slots: AbsVTable + 0x2E4 for each concrete TechnoClass subclass, plus the
+// two abstract bases. Three different originals — see the file header. None is
+// claimed by Phobos, Antares or anything in the registry.
+DEFINE_FUNCTION_JUMP(VTABLE, 0x7E2588, TechnoClass_SelectWeapon_Wrapper);    // Aircraft
+DEFINE_FUNCTION_JUMP(VTABLE, 0x7E41A0, TechnoClass_SelectWeapon_Wrapper);    // Building
+DEFINE_FUNCTION_JUMP(VTABLE, 0x7E8F78, TechnoClass_SelectWeapon_Wrapper);    // FootClass
+DEFINE_FUNCTION_JUMP(VTABLE, 0x7F4C44, TechnoClass_SelectWeapon_Wrapper);    // TechnoClass
+DEFINE_FUNCTION_JUMP(VTABLE, 0x7EB33C, InfantryClass_SelectWeapon_Wrapper);  // Infantry
+DEFINE_FUNCTION_JUMP(VTABLE, 0x7F5F54, UnitClass_SelectWeapon_Wrapper);      // Unit
