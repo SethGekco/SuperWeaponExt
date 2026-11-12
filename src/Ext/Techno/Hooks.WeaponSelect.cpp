@@ -73,7 +73,12 @@
  * STRICTLY READ-ONLY: every table it consults is built on the game thread from
  * the shared frame tick (`SWExt::WeaponSelect::FrameTick`), and the wrapper
  * itself allocates nothing and mutates nothing. The one exception is the
- * diagnostic log, which is guarded by a mutex and is not game state.
+ * diagnostic log, whose fast path is a lock-free relaxed read and which is not
+ * game state.
+ *
+ * ⚠ That includes `TechnoTypeExt::UnifiedIndex`, which looks like a pure
+ * accessor and is not — it caches into the type's ext on first call. FrameTick
+ * warms it for every type so no worker ever takes that path.
  *
  * ⚠ WHY THE SNAPSHOT MUST BE BUILT FROM THE TICK AND NOT ON FIRST USE.
  * The WhileNear rules need the POSITIONS of other objects, not just type data.
@@ -105,9 +110,11 @@
 #include <Ext/Techno/WeaponSelect.h>
 
 #include <algorithm>
+#include <atomic>
+#include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <mutex>
-#include <utility>
 #include <vector>
 
 namespace
@@ -132,7 +139,10 @@ namespace
     std::vector<int> g_inhibitorTypes;    // sorted unified type indices
     std::vector<int> g_designatorTypes;
     int  g_builtForCount = -1;            // SuperWeaponTypeClass::Array.Count when built
+    int  g_builtForTypes = -1;            // TechnoTypeClass::Array.Count when built
     bool g_cacheReady    = false;
+
+    void BuildLogTable(int typeCount);
 
     void BuildCache()
     {
@@ -163,8 +173,21 @@ namespace
             v->erase(std::unique(v->begin(), v->end()), v->end());
         }
 
-        g_builtForCount = SuperWeaponTypeClass::Array.Count;
-        g_cacheReady    = true;
+        // ⚠ Warm TechnoTypeExt::UnifiedIndex for EVERY type, here on the game
+        // thread. It caches into the type's ext on first use, so leaving it cold
+        // would mean a worker thread doing the first call — a write on a path
+        // that must be read-only — and, worse, every cold call runs
+        // TechnoTypeClass::Array.FindItemIndex, a linear scan, once per
+        // candidate. Warming it makes every later call a pointer read.
+        const int typeCount = TechnoTypeClass::Array.Count;
+        for (int i = 0; i < typeCount; ++i)
+            TechnoTypeExt::UnifiedIndex(TechnoTypeClass::Array.GetItem(i));
+
+        BuildLogTable(typeCount);
+
+        g_builtForCount  = SuperWeaponTypeClass::Array.Count;
+        g_builtForTypes  = typeCount;
+        g_cacheReady     = true;
 
         Debug::Log("[SuperWeaponExt] weapon-select cache: %u inhibitor type(s), "
                    "%u designator type(s)\n",
@@ -321,28 +344,92 @@ namespace
     // visible in game, because the engine may pick a secondary weapon on its own
     // for unrelated reasons, so "it looked different" proves nothing.
     //
-    // ⚠ This is the ONLY mutable state the wrapper touches, and the wrapper can
-    // run on a PerfExt worker thread, so it takes a lock. The lock is held
-    // across the Debug::Log call as well, so two threads cannot interleave
-    // halves of a line into the log file. It sits on the rare path — reached
-    // only once a rule has actually matched — so it costs nothing in the common
-    // case. It is diagnostics, never game state: no synced decision reads it.
-    std::vector<std::pair<int, int>> g_logged;
-    std::mutex                       g_loggedLock;
+    // ⚠ THE FAST PATH MUST NOT TAKE THE LOCK. The first version of this guarded
+    // the whole thing with a mutex, reasoning that it "sits on the rare path —
+    // reached only once a rule has actually matched". That reasoning is wrong for
+    // the FIRER-side rules: StandingInInfluence tests the firer's own position
+    // and never looks at the target, so while one MTNK stands in an inhibitor's
+    // influence EVERY candidate of its target search matches. With PerfExt lane 3
+    // that is 5 threads taking one mutex per candidate, ~7,000 candidates per
+    // walk, ~150 walks per frame — one cache line ping-ponging between cores in
+    // the game's hottest loop. TAExt's locomotor refcount did exactly this and
+    // made every lane 4.5x slower (PerfExt lane3-plan.md §25).
+    //
+    // So: an atomic flag per (firer type, target type), read RELAXED with no
+    // lock. After the first line for a pair, a matched candidate costs one shared
+    // read of a line that stays in Shared state on every core. The lock is taken
+    // only to write a line, and is held across Debug::Log so two threads cannot
+    // interleave halves of one line.
+    //
+    // The firer dimension is COMPACTED to the types that actually carry a
+    // WeaponVs rule — a deliberate configuration, so realistically a handful —
+    // rather than types x types, which a large mod would make a multi-megabyte
+    // allocation for a diagnostic.
+    //
+    // Relaxed is the right order: nothing is published through this flag. It
+    // orders no other data, and no synced decision reads it. It is diagnostics.
+    std::vector<int>                              g_logFirerSlot;  // unified index -> dense slot, -1 = no rule
+    std::unique_ptr<std::atomic<unsigned char>[]> g_logFlags;
+    std::size_t                                   g_logTypeCount = 0;
+    std::mutex                                    g_logLock;
+
+    // Called from BuildCache, i.e. the game thread, with no worker live.
+    void BuildLogTable(int typeCount)
+    {
+        const std::size_t types = typeCount > 0 ? static_cast<std::size_t>(typeCount) : 0;
+
+        g_logFirerSlot.assign(types, -1);
+
+        int firers = 0;
+        for (std::size_t i = 0; i < types; ++i)
+        {
+            auto const pType = TechnoTypeClass::Array.GetItem(static_cast<int>(i));
+            auto const pExt  = pType ? TechnoTypeExt::ExtMap.Find(pType) : nullptr;
+
+            if (pExt && pExt->WeaponVs.Active())
+                g_logFirerSlot[i] = firers++;
+        }
+
+        g_logTypeCount = types;
+
+        const std::size_t cells = static_cast<std::size_t>(firers) * types;
+        g_logFlags = cells ? std::make_unique<std::atomic<unsigned char>[]>(cells) : nullptr;
+
+        for (std::size_t i = 0; i < cells; ++i)
+            g_logFlags[i].store(0, std::memory_order_relaxed);
+    }
 
     void LogOnce(int firerIdx, int targetIdx, const char* firerId,
                  const char* targetId, const char* why, int chosen, int override_)
     {
-        std::lock_guard<std::mutex> guard(g_loggedLock);
+        if (!g_logFlags || firerIdx < 0 || targetIdx < 0
+            || static_cast<std::size_t>(firerIdx)  >= g_logFirerSlot.size()
+            || static_cast<std::size_t>(targetIdx) >= g_logTypeCount)
+        {
+            return;
+        }
 
-        for (auto const& e : g_logged)
-            if (e.first == firerIdx && e.second == targetIdx)
-                return;
+        const int slot = g_logFirerSlot[static_cast<std::size_t>(firerIdx)];
+        if (slot < 0)
+            return;   // firer carries no WeaponVs rule; cannot reach here anyway
 
-        g_logged.emplace_back(firerIdx, targetIdx);
+        auto& flag = g_logFlags[static_cast<std::size_t>(slot) * g_logTypeCount
+                                + static_cast<std::size_t>(targetIdx)];
+
+        if (flag.load(std::memory_order_relaxed))
+            return;
+
+        std::lock_guard<std::mutex> guard(g_logLock);
+
+        if (flag.load(std::memory_order_relaxed))
+            return;
 
         Debug::Log("[SuperWeaponExt] %s vs %s (%s): weapon %d -> %d\n",
                    firerId, targetId, why, chosen, override_);
+
+        // Set AFTER the write, so a set flag always means the line is already in
+        // the file rather than in progress.
+        flag.store(1, std::memory_order_relaxed);
     }
 
     // ⚠ CALLING CONVENTION — this crashed the game once already.
@@ -484,10 +571,22 @@ namespace
 // =============================================================================
 void SWExt::WeaponSelect::FrameTick()
 {
-    // Rebuilt when the superweapon array changes size, which is what a rules
-    // reload (new scenario, different mod) looks like from here.
-    if (g_builtForCount != SuperWeaponTypeClass::Array.Count)
+    // Rebuilt when either array changes size, which is what a rules reload (new
+    // scenario, different mod) looks like from here. The type count matters as
+    // well as the superweapon count, because the log table is indexed by type
+    // and UnifiedIndex is warmed per type.
+    //
+    // ⚠ This reallocates the log table, so it must not run while a worker could
+    // be reading it. It cannot: PerfExt lane 3 is fork-join, entered from inside
+    // one GreatestThreat call, and the game thread runs no game logic until the
+    // join — so the post-loop seat this is called from can never overlap the
+    // parallel phase. If lane 3 ever gains a phase that outlives the join, this
+    // assumption needs revisiting.
+    if (g_builtForCount != SuperWeaponTypeClass::Array.Count
+        || g_builtForTypes != TechnoTypeClass::Array.Count)
+    {
         BuildCache();
+    }
 
     BuildInfluence();
 }
@@ -497,13 +596,23 @@ void SWExt::WeaponSelect::FrameTick()
 // so its target checks must stay serial.
 //
 // Now always 0. Every table the wrapper reads is built on the game thread by
-// FrameTick above, and the only remaining mutable state is the diagnostic log,
-// which holds a mutex across both its dedup list and its write. The wrapper
-// allocates nothing and mutates no game state on any path.
+// FrameTick above. Three writes had to be removed to make that true:
+//
+//   1. the type cache, previously built lazily on first use;
+//   2. the WhileNear influence list, previously built on the first weapon choice
+//      of each frame (also a desync — see the file header);
+//   3. TechnoTypeExt::UnifiedIndex, which caches into the type's ext on first
+//      call. Easy to miss, because it reads as a pure accessor. It is now warmed
+//      for every type in BuildCache, which also takes its cold path — a linear
+//      TechnoTypeClass::Array.FindItemIndex — out of the per-candidate path.
+//
+// What remains is the diagnostic log, whose fast path is a relaxed atomic read
+// and whose lock is taken only to write a line.
 //
 // ⚠ PerfExt's lane 3 reads this to choose parallel vs serial. Do NOT reintroduce
 // a write on the wrapper's path without changing this back to 1 and telling the
 // PerfExt session — a silent write here is a data race on their worker threads.
+// "Pure-looking accessor with a lazy cache inside" is the shape to watch for.
 extern "C" __declspec(dllexport) int __cdecl SuperWeaponExt_TargetCheckWrites(TechnoClass* /* pScanner */)
 {
     return 0;
