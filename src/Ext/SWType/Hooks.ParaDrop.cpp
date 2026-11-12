@@ -1054,9 +1054,14 @@ namespace
     //   1. SWExt.ParaDrop.Radius on the SUPERWEAPON that launched this plane
     //   2. SWExt.ParadropRadius on the AIRCRAFT TYPE
     //   3. [General]ParadropRadius, the engine's single global
-    bool ShouldDropNow(AircraftClass* pPlane, int distance)
+    // Shared with the approach hook, so the two comparisons against this radius
+    // cannot drift apart. They decide related questions — "start the drop run"
+    // and "drop now" — and if the approach used the engine's global while the
+    // overfly used a per-type override, a plane could queue the overfly only to
+    // be told it is too far and sent back round, for ever.
+    int ResolveParadropRadius(AircraftClass* pPlane, const char*& source)
     {
-        const char* source = "SW";
+        source = "SW";
         int radius = RecalledPlaneRadius(pPlane);
 
         if (radius < 0)
@@ -1070,6 +1075,14 @@ namespace
             source = "[General]";
             radius = VanillaParadropRadius();
         }
+
+        return radius;
+    }
+
+    bool ShouldDropNow(AircraftClass* pPlane, int distance)
+    {
+        const char* source = nullptr;
+        const int radius = ResolveParadropRadius(pPlane, source);
 
         const bool drop = distance <= radius;
 
@@ -1149,6 +1162,170 @@ DEFINE_HOOK(0x415997, AircraftClass_Mission_ParadropOverfly_Radius, 0x6)
     GET(int, distance, EAX);
 
     return ShouldDropNow(pThis, distance) ? Drop : KeepFlying;
+}
+
+// =============================================================================
+// THE APPROACH STALL — AircraftClass::Mission_ParaDropApproach (0x4158E0)
+// =============================================================================
+//
+// A SECOND, unrelated way a paradrop plane hangs. The usable-area gate above
+// makes a plane hover in mission 27 (ParadropOverfly) with its drop refused;
+// this one parks it in mission 26 and never moves it again.
+//
+// The whole function is 128 bytes:
+//
+//   4158E3  mov  eax,[esi+0x2B4]   ; this->Target
+//   4158EB  jne  0x41590E          ; no target -> SetDestination(0), Retreat
+//   41590E  mov  ecx,[esi+0x5A4]   ; this->Destination
+//   415916  jne  0x41592C          ; ALREADY SET -> skip the setter entirely
+//   41591D  call [edx+0x480]       ; SetDestination(Target) -- the ONLY setter
+//   41592F  call 0x5F6440          ; distance to Target
+//   41593A  cmp  eax,[ecx+0x54C]   ; vs [General]ParadropRadius
+//   415940  jg   0x415956          ; TOO FAR -> return 3, and do NOTHING AT ALL
+//   415942  ...                    ; close enough -> QueueMission(27), --passes
+//
+// The approach points the plane at its target ONLY when Destination is null. So
+// a plane that enters the approach holding a stale non-null Destination never
+// gets pointed at its target at all: it flies to that stale destination,
+// arrives, and then the mission returns 3 for ever. The distance to the target
+// never changes, because the plane is not moving; and the only code that would
+// re-point it sits behind the "Destination == null" test it just failed. Both
+// exits of the comparison are therefore dead ends, which is why the plane keeps
+// its payload, keeps its mission and keeps 100% throttle while going nowhere.
+//
+// Caught by SweepStalledPlanes, not by reasoning: 24 of 24 stalls were
+// mission=26, every one with Destination equal to the plane's OWN cell and the
+// Target 12-18 cells away.
+//
+//   para STALLED f20220 plane=158C3CA8 PDPLANE: still at (49,80) for 90 frames.
+//     mission=26(ParadropApproach) pax=8 h=1500 passes=5 locked=0 usable=1
+//     speed=100% dest=(49,80) target=(37,77) land=0(Clear) level=4
+//
+// pax=8 is a full stick never delivered. pax=1 also occurred, i.e. a stall on a
+// re-approach between drops — Mission_ParadropOverfly queues 0x1A (26) to come
+// around again, so the same dead end is reachable once per pass. The pair
+// (66,85) -> (64,103) recurred across three different planes, so it is a
+// repeatable geometry rather than one unlucky plane.
+//
+// THE REPAIR re-points Destination at the Target: exactly what the engine's own
+// setter at 0x41591D would have done had it been reachable. We do not invent a
+// destination, and we do not touch the mission.
+//
+// ⚠ It fires ONLY when the plane cannot be making progress — it has arrived at
+// the destination it was given AND is still too far to drop. That matters: other
+// systems do write an aircraft's Destination (Phobos hooks the Retreat edge-cell
+// pick at 0x415A7A, two instructions past the end of this function), and a plane
+// still travelling toward a deliberately-chosen waypoint must be left alone.
+// Once Destination is the Target the guard below makes the repair a no-op, so it
+// costs one virtual call per stale destination, not one per frame.
+//
+// ⚠ Deliberately NOT handled: a plane stalled here with NO passengers. Every
+// observed stall had a payload (pax 8 and pax 1), an empty plane in this mission
+// is a different question, and sending one to a target on a hunch would be an
+// unverified guard dressed up as a fix. If the stall detector ever reports
+// mission=26 with pax=0, that is the evidence to act on.
+//
+// DETERMINISM: Target, Destination and the plane's own coordinates are all
+// synced; the mission runs inside the synced object-update loop; there is no RNG
+// on this path. Every client takes this branch on the same frame and writes the
+// same Destination.
+// =============================================================================
+namespace
+{
+    // Chebyshev slack, in cells, for "has arrived at its destination". Exact
+    // equality is what all 24 observed stalls show, but a plane that settles one
+    // cell off would stall just as hard and never be repaired. One cell cannot
+    // be confused with flight: the stalls sit 12-18 cells from their target.
+    constexpr int ArrivedSlack = 1;
+
+    // Log-once per plane, same bounded-registry shape as DeferralsFor.
+    bool& ApproachRepairLogged(AircraftClass* pPlane)
+    {
+        struct Entry { AircraftClass* Plane; bool Logged; };
+        static std::vector<Entry> s_entries;
+
+        for (auto& e : s_entries)
+            if (e.Plane == pPlane)
+                return e.Logged;
+
+        s_entries.push_back(Entry{ pPlane, false });
+        if (s_entries.size() > 256)
+            s_entries.erase(s_entries.begin());
+
+        return s_entries.back().Logged;
+    }
+
+    void RepairStalledApproach(AircraftClass* pPlane)
+    {
+        if (!pPlane)
+            return;
+
+        AbstractClass* const pTarget = pPlane->Target;
+        AbstractClass* const pDest   = pPlane->Destination;
+
+        // A null destination is the engine's own working case: 0x41591D is
+        // reachable and will point the plane at its target next tick.
+        if (!pTarget || !pDest || pDest == pTarget)
+            return;
+
+        // Only a plane that still has something to deliver. See the note above.
+        if (PassengersAboard(pPlane) <= 0)
+            return;
+
+        CellStruct destCell{};
+        if (!AbstractCell(pDest, destCell))
+            return;
+
+        const CellStruct planeCell = CellClass::Coord2Cell(pPlane->GetCoords());
+
+        const int dx = destCell.X - planeCell.X;
+        const int dy = destCell.Y - planeCell.Y;
+        if (dx < -ArrivedSlack || dx > ArrivedSlack
+            || dy < -ArrivedSlack || dy > ArrivedSlack)
+        {
+            return;   // still en route; leave the destination alone
+        }
+
+        CellStruct targetCell{};
+        AbstractCell(pTarget, targetCell);
+
+        if (!ApproachRepairLogged(pPlane))
+        {
+            ApproachRepairLogged(pPlane) = true;
+            Debug::Log("[SuperWeaponExt] para APPROACH REPAIR f%d plane=%p: "
+                       "arrived at dest (%d,%d) but target (%d,%d) is still "
+                       "%d,%d cells away and mission 26 has no way back — "
+                       "re-pointing Destination at the target. pax=%d\n",
+                       Unsorted::CurrentFrame, static_cast<void*>(pPlane),
+                       destCell.X, destCell.Y, targetCell.X, targetCell.Y,
+                       targetCell.X - planeCell.X, targetCell.Y - planeCell.Y,
+                       PassengersAboard(pPlane));
+        }
+
+        pPlane->SetDestination(pTarget, true);
+    }
+}
+
+// The engine's own radius comparison, replaced so that the approach and the
+// overfly agree on the radius, and so the "too far" exit stops being a dead end.
+//
+// Stolen bytes are the 6-byte `mov ecx,0x8871E0` at 0x415934, i.e. 0x415934 ..
+// 0x415939 — clear of Phobos' 0x415A00 and 0x415A7A, and of our own 0x415997
+// and 0x415C60. We never execute the stolen instruction: both return addresses
+// are past the comparison it fed, so the decision is made entirely here.
+DEFINE_HOOK(0x415934, AircraftClass_Mission_ParadropApproach_Stall, 0x6)
+{
+    enum { BeginDropRun = 0x415942, KeepApproaching = 0x415956 };
+
+    GET(AircraftClass*, pThis, ESI);
+    GET(int, distance, EAX);
+
+    const char* source = nullptr;
+    if (distance <= ResolveParadropRadius(pThis, source))
+        return BeginDropRun;
+
+    RepairStalledApproach(pThis);
+    return KeepApproaching;
 }
 
 // ============================================================================
