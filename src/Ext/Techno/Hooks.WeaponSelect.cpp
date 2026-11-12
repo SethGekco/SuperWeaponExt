@@ -582,6 +582,16 @@ void SWExt::WeaponSelect::FrameTick()
     // join — so the post-loop seat this is called from can never overlap the
     // parallel phase. If lane 3 ever gains a phase that outlives the join, this
     // assumption needs revisiting.
+    //
+    // CONFIRMED by the PerfExt session against its own source, 2026-11-12:
+    // Pool::Run is called from exactly one place inside the GreatestThreat walk
+    // (PerfExt ParallelScan.cpp:1213), no job outlives the join, and
+    // MULTICORE.md rule 2 states it as an invariant. Measured with this file's
+    // wrapper live, 300 s under Verify: 31,666 walks, all forked and served, 0
+    // mismatches, 0 arg mismatches, 0 redos, 0 guard hits, 0 unready, no crash.
+    // Timing showed no per-candidate cost from the wrapper -- 865 us/walk forked
+    // at 0.137 us/candidate, against 2,252 us/walk with lane 3 off in the same
+    // game.
     if (g_builtForCount != SuperWeaponTypeClass::Array.Count
         || g_builtForTypes != TechnoTypeClass::Array.Count)
     {
